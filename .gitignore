@@ -1,0 +1,20 @@
+# Build output
+windows/target/
+android/build/
+# Python caches
+__pycache__/
+*.pyc
+
+# Machine-specific settings (paths, Tailscale host) — copy local.env.example
+local.env
+# APK signing key: the phone only accepts updates signed with it — never publish
+*.keystore
+*.jks
+# Raw Bluetooth captures contain device addresses and all traffic — keep local
+captures/*.log
+captures/*.cfa
+# Icon reference photos / working files (large, personal)
+icon-modeling/
+
+# Release artifacts (tools/release.sh)
+dist/

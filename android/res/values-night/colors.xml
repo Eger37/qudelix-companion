@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated theme colours: light = red & grey, dark = red & black. -->
+<resources>
+    <color name="bg_a">#F20B0B0C</color>
+    <color name="panel_a">#FF1A1A1C</color>
+    <color name="stroke_a">#FF2E2E33</color>
+    <color name="text_a">#FFF2F2F2</color>
+    <color name="muted_a">#FF9A9A9E</color>
+</resources>

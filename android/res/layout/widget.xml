@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Home-screen widget. Colours: *_a resources follow the system light/dark (values-night);
+     QudelixWidget swaps in *_l / *_d when the user forces a theme. Light = red & grey, dark = red & black. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/w_bg_a"
+    android:padding="12dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingBottom="8dp">
+        <TextView
+            android:id="@+id/title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Qudelix 5K"
+            android:textColor="@color/text_a"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="…"
+            android:textColor="@color/muted_a"
+            android:textSize="11sp" />
+        <Button
+            android:id="@+id/btn_refresh"
+            android:layout_width="36dp"
+            android:layout_height="28dp"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/w_btn_a"
+            android:padding="0dp"
+            android:text="↻"
+            android:textColor="@color/text_a"
+            android:textSize="14sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <Button
+            android:id="@+id/btn_usb"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/w_btn_a"
+            android:text="USB"
+            android:textAllCaps="false"
+            android:textColor="@color/text_a"
+            android:textSize="13sp" />
+        <Button
+            android:id="@+id/btn_bt1"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/w_btn_a"
+            android:text="A2DP 1"
+            android:textAllCaps="false"
+            android:textColor="@color/text_a"
+            android:textSize="13sp" />
+        <Button
+            android:id="@+id/btn_bt2"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:background="@drawable/w_btn_a"
+            android:text="A2DP 2"
+            android:textAllCaps="false"
+            android:textColor="@color/text_a"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingTop="8dp"
+        android:gravity="center_vertical">
+        <Button
+            android:id="@+id/btn_vol_dn"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/w_btn_a"
+            android:text="−"
+            android:textAllCaps="false"
+            android:textColor="@color/text_a"
+            android:textSize="13sp" />
+        <TextView
+            android:id="@+id/vol"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1.4"
+            android:gravity="center"
+            android:text="— dB"
+            android:textColor="@color/text_a"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+        <Button
+            android:id="@+id/btn_vol_up"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:background="@drawable/w_btn_a"
+            android:text="+"
+            android:textAllCaps="false"
+            android:textColor="@color/text_a"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- Tappable volume bar: segment i sets -60 + 5*(i+1) dB (widgets can't host a slider). -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingTop="2dp">
+        <TextView android:id="@+id/seg0" android:layout_width="0dp" android:layout_height="24dp"
+            android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
+        <TextView android:id="@+id/seg1" android:layout_width="0dp" android:layout_height="24dp"
+            android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
+        <TextView android:id="@+id/seg2" android:layout_width="0dp" android:layout_height="24dp"
+            android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
+        <TextView android:id="@+id/seg3" android:layout_width="0dp" android:layout_height="24dp"
+            android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
+        <TextView android:id="@+id/seg4" android:layout_width="0dp" android:layout_height="24dp"
+            android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
+        <TextView android:id="@+id/seg5" android:layout_width="0dp" android:layout_height="24dp"
+            android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
+        <TextView android:id="@+id/seg6" android:layout_width="0dp" android:layout_height="24dp"
+            android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
+        <TextView android:id="@+id/seg7" android:layout_width="0dp" android:layout_height="24dp"
+            android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
+        <TextView android:id="@+id/seg8" android:layout_width="0dp" android:layout_height="24dp"
+            android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
+        <TextView android:id="@+id/seg9" android:layout_width="0dp" android:layout_height="24dp"
+            android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
+        <TextView android:id="@+id/seg10" android:layout_width="0dp" android:layout_height="24dp"
+            android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
+        <TextView android:id="@+id/seg11" android:layout_width="0dp" android:layout_height="24dp"
+            android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/playing"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Playing: ?"
+        android:textColor="@color/muted_a"
+        android:textSize="11sp" />
+</LinearLayout>

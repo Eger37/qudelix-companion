@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated theme colours: light = red & light grey, dark = red & black. -->
+<resources>
+    <color name="accent">#FFE53935</color>
+    <color name="bg_l">#FFE4E4E7</color>
+    <color name="panel_l">#FFF4F4F6</color>
+    <color name="stroke_l">#FFCFCFD4</color>
+    <color name="text_l">#FF111111</color>
+    <color name="muted_l">#FF5E5E63</color>
+    <color name="bg_d">#F20B0B0C</color>
+    <color name="panel_d">#FF1A1A1C</color>
+    <color name="stroke_d">#FF2E2E33</color>
+    <color name="text_d">#FFF2F2F2</color>
+    <color name="muted_d">#FF9A9A9E</color>
+    <color name="bg_a">#FFE4E4E7</color>
+    <color name="panel_a">#FFF4F4F6</color>
+    <color name="stroke_a">#FFCFCFD4</color>
+    <color name="text_a">#FF111111</color>
+    <color name="muted_a">#FF5E5E63</color>
+</resources>
