@@ -1,0 +1,59 @@
+[package]
+name = "qudelix-widget"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop gadget to control a Qudelix 5K DAC/amp over USB-HID (and BLE)"
+license = "MIT"
+publish = false
+
+[features]
+default = []
+# Optional BLE (Qualcomm GAIA over WinRT GATT) transport. Off by default; USB-HID
+# is the primary path for the Windows widget. Enabling it pulls the WinRT
+# Bluetooth features of the `windows` crate and compiles `src/ble.rs`.
+ble = [
+    "windows/Foundation",
+    "windows/Foundation_Collections",
+    "windows/Devices_Bluetooth",
+    "windows/Devices_Bluetooth_Advertisement",
+    "windows/Devices_Bluetooth_GenericAttributeProfile",
+    "windows/Devices_Enumeration",
+    "windows/Storage_Streams",
+]
+
+# Windows-only dependencies: the host build (for `cargo test` of the protocol
+# core) needs none of this.
+[target.'cfg(windows)'.dependencies]
+hidapi = "2"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_Accessibility",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_GdiPlus",
+    "Win32_System_Registry",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_System_Com",
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_Devices_Bluetooth",
+    "Win32_Networking_WinSock",
+    "Win32_Networking_WinHttp",
+    "Win32_Storage_FileSystem",
+]
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+panic = "abort"
