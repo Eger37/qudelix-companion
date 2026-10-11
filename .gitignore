@@ -13,8 +13,12 @@ local.env
 # Raw Bluetooth captures contain device addresses and all traffic — keep local
 captures/*.log
 captures/*.cfa
-# Icon reference photos / working files (large, personal)
-icon-modeling/
+# Icon reference photos / working files (large, personal).
+# Only the masked, EXIF-stripped photos in refs/photos-public/ are published.
+icon-modeling/*
+!icon-modeling/refs/
+icon-modeling/refs/*
+!icon-modeling/refs/photos-public/
 
 # Release artifacts (tools/release.sh)
 dist/
