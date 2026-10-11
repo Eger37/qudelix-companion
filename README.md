@@ -60,8 +60,7 @@ Windows — no admin rights (not Program Files: that needs UAC and would break s
 
 - Build: `cargo build --release --target x86_64-pc-windows-gnu --features ble` · tests: `cargo test`
 - **Deploy:** `./deploy.sh` — build, install via `--install` (closes the running widget, copies to the
-  install folder, starts it), refresh `Desktop\Qudelix\qudelix-5k.exe` (used by the per-source
-  shortcuts), then self-test (connect → read → release). Prints `self-test OK` / `SKIPPED` (5K busy) / `FAILED`.
+  install folder, starts it), then self-test (connect → read → release). Prints `self-test OK` / `SKIPPED` (5K busy) / `FAILED`.
 - UI: custom-drawn, stays on the desktop (survives Win+D), hold − / + to repeat, drag the bar.
   ⚙ / right-click: theme (system / Windows colours / light red & grey / dark red & black / custom
   background + accent via the Windows colour picker), **device** (auto = first paired "Qudelix-5K…",
