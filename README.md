@@ -71,9 +71,11 @@ Windows — no admin rights (not Program Files: that needs UAC and would break s
   Diagnostics: `--rfcomm "<hex>;<hex>"` (raw frames), `--cycle-test N`, `--collision-test N`,
   `--probe-channels` (⚠ bare connects — only with nothing else connected), `--set-priority`/`--set-volume` (USB-HID).
 - Log: `%APPDATA%\qudelix-widget\qudelix.log` (UTC times; panics are logged too).
-- Also hosts the phone's **update + log server**: listens on `127.0.0.1:8788`, exposed to the
-  tailnet as `:8787` by `tailscale serve` (set up by the widget, no admin). Serves only
-  `version.json` + the APK; `POST /log` appends to `%APPDATA%\qudelix-widget\phone.log`.
+- **Phone debug over Tailscale** (⚙, opt-in; on by default only where an `updates` folder already
+  exists): the phone's update + log server on `127.0.0.1:8788`, exposed to the tailnet only as
+  `:8787` by `tailscale serve` (no admin). Serves only `version.json` + the APK from
+  `%APPDATA%\qudelix-widget\updates`; `POST /log` appends to `%APPDATA%\qudelix-widget\phone.log`.
+  Switching it off removes the tailnet forward. The dialog shows the PC name to enter on the phone.
 
 ## Android (`android/`)
 
@@ -86,24 +88,31 @@ Windows — no admin rights (not Program Files: that needs UAC and would break s
   Tap the dB value → popup with slider + hold-to-repeat (home-screen widgets can't receive press-and-hold).
   Settings (app screen, or long-press the widget → Customize): theme incl. custom background/accent,
   device (auto or any paired device), volume step.
-- Debugging without adb: every log line and crash is mirrored to the PC (`phone.log` above).
+- **Debug over Tailscale** (settings screen, off by default): tick it and enter the PC's MagicDNS
+  name → every log line and crash is mirrored to the PC (`phone.log` above, readable from WSL by
+  an AI assistant) and test builds from the PC are installed too (higher version wins; the PC on a
+  tie). Kept across updates. One APK for everyone: public builds have no PC name baked in
+  (`PUBLIC_BUILD=1`); the owner's tailnet builds (`UPDATE_HOST` in `local.env`) switch it on once.
 
 ## Releases & auto-update
 
-- `tools/release.sh X.Y.Z` — builds + tests both widgets, tags `vX.Y.Z`, pushes, and creates a
-  GitHub release with `qudelix-widget.exe` and `qudelix-widget.apk`.
+- `tools/release.sh X.Y.Z` — checks (gh login, clean `main` in sync with origin), builds + tests
+  both widgets, tags `vX.Y.Z`, pushes, and creates a GitHub release with `qudelix-widget.exe` and
+  the public `qudelix-widget.apk`; only then (owner's PC) publishes the tailnet build and deploys
+  this PC. Re-runnable after a failure. Builds remap `$HOME` out of the exe's paths.
 - **PC widget** checks the latest release 30 s after start and every 6 h (⚙ → "Check for updates
   now" / "Automatic updates"). A newer exe is downloaded (WinHTTP), swapped in (the running exe is
   renamed to `.old`) and relaunched — no admin rights.
-- **Phone** checks the same release every ~15 min / on "Check for updates now"; on the owner's builds
-  it also checks the PC over Tailscale and takes the higher version. The first install is manual;
+- **Phone** checks the same release every ~15 min / on "Check for updates now"; with "Debug over
+  Tailscale" on it also checks the PC and takes the higher version. The first install is manual;
   later ones install silently on Android 12+ (same signing key required).
 - Forks: change `REPO` in `windows/src/self_update.rs` and `GITHUB_REPO` in `Updater.java`.
 
 ## First install on a new phone
 
-Copy `Desktop\Qudelix-Widget.apk`, install (allow unknown sources), open once: grant Bluetooth +
-notifications, tap "Allow installing updates", then add the widget. Tailscale must be on for updates/logs.
+Download `qudelix-widget.apk` from the latest GitHub release (the owner's PC also drops one at
+`Desktop\Qudelix-Widget.apk`), install (allow unknown sources), open once: grant Bluetooth +
+notifications, tap "Allow installing updates", then add the widget. Optional: "Debug over Tailscale".
 
 ## Known limits
 

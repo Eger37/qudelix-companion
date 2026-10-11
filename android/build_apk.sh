@@ -15,6 +15,9 @@ export PATH="$JDK/bin:$PATH"
 OUT=build
 # Machine-specific values (update server) — optional; see ../local.env.example.
 [[ -f ../local.env ]] && source ../local.env
+# PUBLIC_BUILD=1 (tools/release.sh, GitHub asset): no PC name baked in — users set
+# "Debug over Tailscale" on the phone. The owner's tailnet build seeds it from UPDATE_HOST.
+[[ "${PUBLIC_BUILD:-}" == 1 ]] && UPDATE_HOST=
 # Semantic version shared with the Windows widget: ../VERSION (MAJOR.MINOR.PATCH).
 # versionCode is derived so it always grows: MAJOR*1000000 + MINOR*1000 + PATCH.
 VERSION_NAME="$(tr -d '[:space:]' < ../VERSION)"

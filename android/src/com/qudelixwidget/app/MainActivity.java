@@ -141,7 +141,7 @@ public class MainActivity extends Activity {
         upd.setTextSize(14);
         upd.setPadding(0, 32, 0, 8);
         upd.setText("Version " + Updater.installedVersionName(this) + " · updates: GitHub "
-                + Updater.GITHUB_REPO + (Updater.enabled() ? " + this PC (Tailscale)" : ""));
+                + Updater.GITHUB_REPO + (Updater.enabled(this) ? " + this PC (Tailscale)" : ""));
         root.addView(upd);
 
         Button unknown = new Button(this);
@@ -161,6 +161,55 @@ public class MainActivity extends Activity {
             }).start();
         });
         root.addView(check);
+
+        // ── Debug over Tailscale (for developers) ──
+        root.addView(header("Debug over Tailscale", fg));
+        android.widget.CheckBox dbg = new android.widget.CheckBox(this);
+        dbg.setText("Send the log to my PC and take test builds from it");
+        dbg.setTextColor(fg);
+        dbg.setButtonTintList(android.content.res.ColorStateList.valueOf(WTheme.accent(this)));
+        dbg.setChecked(Prefs.getDebugOn(this));
+        root.addView(dbg);
+        android.widget.EditText host = new android.widget.EditText(this);
+        host.setSingleLine(true);
+        host.setHint("PC name, e.g. my-pc.tailnet-name.ts.net");
+        host.setText(Prefs.getDebugHost(this));
+        host.setTextColor(fg);
+        host.setHintTextColor(muted);
+        host.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        root.addView(host);
+        TextView dbgResult = small("", muted);
+        Button test = new Button(this);
+        test.setText("Save & test connection");
+        test.setOnClickListener(v -> {
+            Prefs.setDebugHost(this, host.getText().toString());
+            Prefs.setDebugOn(this, dbg.isChecked());
+            dbgResult.setText("testing…");
+            new Thread(() -> {
+                String r = Updater.testPc(this);
+                runOnUiThread(() -> dbgResult.setText(r));
+            }).start();
+        });
+        dbg.setOnCheckedChangeListener((v, on) -> {
+            Prefs.setDebugOn(this, on);
+            Dbg.log(this, "debug over Tailscale " + (on ? "on" : "off"));
+        });
+        root.addView(test);
+        root.addView(dbgResult);
+        root.addView(small(
+            "What it does: while on, every log line and crash of this app goes to the Qudelix widget on "
+            + "your Windows PC (%APPDATA%\\qudelix-widget\\phone.log), and the app also installs test "
+            + "builds the PC offers (the higher version of GitHub and PC wins). Off = GitHub updates only, "
+            + "nothing leaves the phone.\n\n"
+            + "Needs: Tailscale on this phone and on the PC, signed in to the same tailnet; the PC widget "
+            + "with ⚙ → \"Phone debug over Tailscale\" on (it shows the name to enter here). Use the PC's "
+            + "MagicDNS name, not its 100.x address.\n\n"
+            + "How it works: the PC widget serves http://<PC name>:8787 inside the tailnet only (tailscale "
+            + "serve → 127.0.0.1); nothing is open to the internet. The log has app version, phone model, "
+            + "commands and errors — no accounts, no Bluetooth addresses.\n\n"
+            + "AI assistants: an assistant on the PC (e.g. Claude Code in WSL) can read phone.log at "
+            + "/mnt/c/Users/<you>/AppData/Roaming/qudelix-widget/phone.log to debug the phone without a cable. "
+            + "The setting is kept across updates.", muted));
 
         Runnable refresh = () -> {
             unknown.setVisibility(getPackageManager().canRequestPackageInstalls() ? View.GONE : View.VISIBLE);

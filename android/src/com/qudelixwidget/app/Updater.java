@@ -29,17 +29,18 @@ import java.net.URL;
 public final class Updater {
     private Updater() {}
 
-    /** Update server: the Windows widget, reached via `tailscale serve` on the PC.
-     *  Must be the MagicDNS NAME — tailscale serve routes by Host and 404s a bare IP.
-     *  Comes from UPDATE_HOST in local.env (build_apk.sh → BuildInfo); empty = off. */
-    public static final String BASE_URL = BuildInfo.UPDATE_HOST.isEmpty()
-            ? "" : "http://" + BuildInfo.UPDATE_HOST + ":8787/";
-
-    public static boolean enabled() {
-        return !BASE_URL.isEmpty();
+    /** Update + log server: the Windows widget, reached via `tailscale serve` on the PC,
+     *  only while "Debug over Tailscale" is on (settings screen). Must be the MagicDNS
+     *  NAME — tailscale serve routes by Host and 404s a bare IP. "" = off. */
+    public static String baseUrl(Context c) {
+        String host = Prefs.getDebugHost(c);
+        return Prefs.getDebugOn(c) && !host.isEmpty() ? "http://" + host + ":8787/" : "";
     }
 
-    /** Check, download and install if newer. Blocking — call off the main thread. */
+    public static boolean enabled(Context c) {
+        return !baseUrl(c).isEmpty();
+    }
+
     /** GitHub repository whose latest release carries qudelix-widget.apk. */
     public static final String GITHUB_REPO = "Eger37/qudelix-companion";
 
@@ -51,8 +52,8 @@ public final class Updater {
 
     /**
      * Check, download and install if newer. Blocking — call off the main thread.
-     * Sources: GitHub Releases (always) and the PC on the tailnet (if UPDATE_HOST
-     * was set at build time); the higher version wins.
+     * Sources: GitHub Releases (always) and the PC on the tailnet (debug mode); the
+     * higher version wins, the PC on a tie (its build keeps the debug setting seeded).
      */
     public static synchronized String checkAndInstall(Context c) {
         long local = installedVersion(c);
@@ -65,12 +66,13 @@ public final class Updater {
         } catch (Exception e) {
             errors += " github: " + e.getMessage();
         }
-        if (enabled()) {
+        String base = baseUrl(c);
+        if (!base.isEmpty()) {
             try {
-                JSONObject v = new JSONObject(new String(get(BASE_URL + "version.json"), "UTF-8"));
+                JSONObject v = new JSONObject(new String(get(base + "version.json"), "UTF-8"));
                 Offer pc = new Offer(v.getLong("versionCode"), v.optString("versionName", "?"),
-                        BASE_URL + v.optString("apk", "qudelix-widget.apk"));
-                if (best == null || pc.code > best.code) best = pc;
+                        base + v.optString("apk", "qudelix-widget.apk"));
+                if (best == null || pc.code >= best.code) best = pc;
             } catch (Exception e) {
                 errors += " pc: " + e.getMessage();
             }
@@ -138,6 +140,18 @@ public final class Updater {
             return c.getPackageManager().getPackageInfo(c.getPackageName(), 0).getLongVersionCode();
         } catch (Exception e) {
             return 0;
+        }
+    }
+
+    /** Debug-mode connection test: the PC's version.json, or why it failed. Blocking. */
+    static String testPc(Context c) {
+        String base = baseUrl(c);
+        if (base.isEmpty()) return "debug is off or no PC name set";
+        try {
+            JSONObject v = new JSONObject(new String(get(base + "version.json"), "UTF-8"));
+            return "✓ PC reached (it offers v" + v.optString("versionName", "?") + ")";
+        } catch (Exception e) {
+            return "✗ " + e.getMessage();
         }
     }
 

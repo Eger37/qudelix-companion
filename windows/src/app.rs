@@ -24,7 +24,7 @@
 
 use std::ffi::c_void;
 
-use windows::core::{w, PCWSTR};
+use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{
     GetLastError, ERROR_ALREADY_EXISTS, HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
@@ -189,6 +189,7 @@ impl AppState {
         const U_AUTO: usize = 32;
         const START_WIN: usize = 33;
         const UNINSTALL: usize = 34;
+        const PHONE_DEBUG: usize = 35;
         const D_AUTO: usize = 200;
         const D_FIRST: usize = 201;
         const L_FIRST: usize = 300;
@@ -248,6 +249,7 @@ impl AppState {
             add(root, U_CHECK, false, &format!("Check for updates now (v{})", crate::VERSION.trim()));
             add(root, U_AUTO, s.auto_update, "Automatic updates");
             add(root, START_WIN, crate::autostart::is_enabled(), "Start with Windows");
+            add(root, PHONE_DEBUG, crate::update_server::enabled(), "Phone debug over Tailscale…");
             if crate::installer::is_installed_copy() {
                 add(root, UNINSTALL, false, "Uninstall…");
             }
@@ -300,6 +302,10 @@ impl AppState {
                     if crate::installer::uninstall(hwnd) {
                         let _ = DestroyWindow(hwnd);
                     }
+                    return;
+                }
+                PHONE_DEBUG => {
+                    phone_debug_toggle(hwnd);
                     return;
                 }
                 START_WIN => {
@@ -502,6 +508,35 @@ fn apply_dwm_frame(hwnd: HWND, t: &ui::Theme) {
 }
 
 /// Create the window, pin it to the desktop, and run the message loop.
+/// ⚙ → "Phone debug over Tailscale…": explain, then switch the phone's update/log server.
+fn phone_debug_toggle(hwnd: HWND) {
+    if crate::update_server::enabled() {
+        crate::update_server::set_enabled(false);
+        return;
+    }
+    let name = crate::update_server::tailnet_name();
+    let text = format!(
+        "Phone debug over Tailscale\n\n\
+         What it does: the Android widget sends its log and crashes to this PC \
+         (%APPDATA%\\qudelix-widget\\phone.log) and can install test builds from it \
+         (the folder %APPDATA%\\qudelix-widget\\updates, filled by android/publish_update.sh).\n\n\
+         Needs: Tailscale on this PC and on the phone, in the same tailnet. On the phone: \
+         settings → \"Debug over Tailscale\" → tick it and enter this PC's name:\n\n    {}\n\n\
+         How it works: Tailscale forwards port {} of this PC inside the tailnet only to the \
+         widget (127.0.0.1:8788). Nothing is opened to the internet or the local network; no admin rights.\n\n\
+         AI assistants (e.g. Claude Code in WSL) can read phone.log to debug the phone without a cable.\n\n\
+         Turn it on?",
+        name.as_deref().unwrap_or("(Tailscale not running — start it and try again)"),
+        crate::update_server::PORT,
+    );
+    let on = unsafe {
+        MessageBoxW(hwnd, &HSTRING::from(text), w!("Qudelix Widget"), MB_YESNO | MB_ICONINFORMATION) == IDYES
+    };
+    if on {
+        crate::update_server::set_enabled(true);
+    }
+}
+
 pub fn run() -> windows::core::Result<()> {
     unsafe {
         // Single instance: if a mutex of this name already exists, another copy
@@ -513,8 +548,8 @@ pub fn run() -> windows::core::Result<()> {
         crate::log::line(&format!("[start] qudelix-widget v{} launched", crate::VERSION.trim()));
         // First run: start with Windows by default (toggle in the ⚙ menu).
         crate::autostart::init_default();
-        // Serve Android self-updates to the tailnet (only while the widget runs).
-        crate::update_server::spawn();
+        // Phone debug over Tailscale (opt-in): serve the phone's test builds + log upload.
+        crate::update_server::start_if_enabled();
 
         let hinstance = GetModuleHandleW(None)?;
         let class_name = CLASS_NAME;

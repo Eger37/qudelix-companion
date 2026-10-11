@@ -61,6 +61,15 @@ pub fn set_flag(key: &str) {
     write_keys(&[(key, "1".to_string())]);
 }
 
+/// A plain string setting; None if never saved.
+pub fn get(key: &str) -> Option<String> {
+    read_map().get(key).cloned()
+}
+
+pub fn set(key: &str, value: &str) {
+    write_keys(&[(key, value.to_string())]);
+}
+
 /// Device picked by name in the settings menu; None = auto (first "Qudelix-5K…").
 pub fn load_device() -> Option<String> {
     read_map().get("device").filter(|v| !v.is_empty()).cloned()

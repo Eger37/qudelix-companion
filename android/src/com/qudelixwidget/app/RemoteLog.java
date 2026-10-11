@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Ships the debug log to the PC widget (`POST /log` → %APPDATA%\qudelix-widget\phone.log)
- * over Tailscale, so the phone can be debugged from the PC without adb. Lines are
+ * over Tailscale while "Debug over Tailscale" is on, so the phone can be debugged from the PC without adb. Lines are
  * batched for ~1.5 s; on failure they are kept and retried with the next batch.
  * Never calls {@link Dbg} (that would recurse).
  */
@@ -36,6 +36,7 @@ public final class RemoteLog {
     }
 
     static synchronized void add(Context c, String line) {
+        if (!Updater.enabled(c)) return; // debug over Tailscale is off: nothing leaves the phone
         pending.add(line);
         while (pending.size() > MAX_PENDING) pending.remove(0);
         if (!scheduled) {
@@ -55,7 +56,7 @@ public final class RemoteLog {
         }
         StringBuilder sb = new StringBuilder();
         for (String l : batch) sb.append("[").append(tag(c)).append("] ").append(l).append('\n');
-        if (!post(sb.toString(), 4000)) {
+        if (!post(c, sb.toString(), 4000)) {
             synchronized (RemoteLog.class) {
                 pending.addAll(0, batch);
                 while (pending.size() > MAX_PENDING) pending.remove(0);
@@ -64,11 +65,12 @@ public final class RemoteLog {
     }
 
     /** Blocking upload; true on success. Used directly for crash reports. */
-    static boolean post(String text, int timeoutMs) {
-        if (!Updater.enabled()) return true; // nowhere to send: drop silently
+    static boolean post(Context c, String text, int timeoutMs) {
+        String base = Updater.baseUrl(c);
+        if (base.isEmpty()) return true; // nowhere to send: drop silently
         try {
             byte[] body = text.getBytes("UTF-8");
-            HttpURLConnection h = (HttpURLConnection) new URL(Updater.BASE_URL + "log").openConnection();
+            HttpURLConnection h = (HttpURLConnection) new URL(base + "log").openConnection();
             h.setConnectTimeout(timeoutMs);
             h.setReadTimeout(timeoutMs);
             h.setRequestMethod("POST");
