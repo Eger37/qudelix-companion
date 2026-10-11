@@ -22,7 +22,7 @@ dex=$(python3 -I -c "import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).geti
 mkdir -p dist
 cp android/build/qudelix-widget.apk windows/target/x86_64-pc-windows-gnu/release/qudelix-widget.exe dist/
 git add VERSION
-git commit -q -m "Release v$VN"
+git diff --cached --quiet || git commit -q -m "Release v$VN"   # VERSION may already be bumped
 git tag "v$VN"
 git push -q origin HEAD "v$VN"
 "$GH" release create "v$VN" dist/qudelix-widget.exe dist/qudelix-widget.apk --title "v$VN" --generate-notes
