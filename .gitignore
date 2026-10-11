@@ -16,6 +16,7 @@ captures/*.cfa
 # Icon reference photos / working files (large, personal).
 # Only the masked, EXIF-stripped photos in refs/photos-public/ are published.
 icon-modeling/*
+!icon-modeling/notes-public/
 !icon-modeling/refs/
 icon-modeling/refs/*
 !icon-modeling/refs/photos-public/
