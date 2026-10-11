@@ -138,20 +138,9 @@ fn patch_in_place(exe: &Path, bg: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// This exe (installed or not) and the CLI copy the 5K → USB/BT shortcuts run
-/// (Desktop\Qudelix\qudelix-5k.exe — next to this exe for a pre-installer setup).
+/// The exe files to recolour: just this one (installed or portable).
 fn targets() -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = Vec::new();
-    let Ok(exe) = std::env::current_exe() else { return v };
-    let mut cli = vec![exe.parent().map(|d| d.join("Qudelix").join("qudelix-5k.exe"))];
-    cli.push(std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Desktop").join("Qudelix").join("qudelix-5k.exe")));
-    for c in cli.into_iter().flatten() {
-        if c.exists() && !v.contains(&c) {
-            v.push(c);
-        }
-    }
-    v.push(exe);
-    v
+    std::env::current_exe().into_iter().collect()
 }
 
 /// Identifies this exe file + colour, so a fresh (white) copy from deploy/update gets recoloured.
