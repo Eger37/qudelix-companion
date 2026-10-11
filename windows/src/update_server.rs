@@ -5,6 +5,10 @@
 //! * `POST /log` appends the phone's debug log to `%APPDATA%\qudelix-widget\phone.log`,
 //!   so the phone can be debugged from the PC (readable from WSL).
 //!
+//! Opt-in: ⚙ → "Phone debug over Tailscale" (widget.ini `phone_debug`). Off = no
+//! tailnet forward and every request refused. Default for a fresh install is off;
+//! a PC that already has an `updates` folder (the owner's dev PC) starts with it on.
+//!
 //! Listens on 127.0.0.1 only; Tailscale forwards tailnet port 8787 to it
 //! (`tailscale serve --http=8787 http://127.0.0.1:8788`, set up by us at start,
 //! no admin needed). That way Windows Firewall — which blocks inbound to our exe
@@ -14,6 +18,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Tailnet-facing port (what the phone uses) and our local backend port.
@@ -27,8 +32,69 @@ const FILES: [(&str, &str); 2] = [
     ("/qudelix-widget.apk", "application/vnd.android.package-archive"),
 ];
 
-/// Start the server on a background thread (never blocks the UI).
-pub fn spawn() {
+static ENABLED: AtomicBool = AtomicBool::new(false);
+static SPAWNED: AtomicBool = AtomicBool::new(false);
+
+/// The saved setting (see module docs for the default).
+pub fn enabled() -> bool {
+    match crate::config::get("phone_debug").as_deref() {
+        Some(v) => v == "1",
+        None => updates_dir().is_dir(),
+    }
+}
+
+/// At widget start: serve only if phone debug is on.
+pub fn start_if_enabled() {
+    if enabled() {
+        ENABLED.store(true, Ordering::SeqCst);
+        spawn();
+    }
+}
+
+/// ⚙ menu toggle: save, then start serving or remove the tailnet forward.
+pub fn set_enabled(on: bool) {
+    crate::config::set("phone_debug", if on { "1" } else { "0" });
+    ENABLED.store(on, Ordering::SeqCst);
+    crate::log::line(&format!("[update] phone debug over Tailscale {}", if on { "on" } else { "off" }));
+    if on {
+        if SPAWNED.load(Ordering::SeqCst) {
+            std::thread::spawn(ensure_tailscale_forward);
+        } else {
+            spawn();
+        }
+    } else {
+        std::thread::spawn(|| tailscale(&["serve", &format!("--http={PORT}"), "off"]));
+    }
+}
+
+/// This PC's Tailscale MagicDNS name (what to enter on the phone), if Tailscale runs.
+pub fn tailnet_name() -> Option<String> {
+    let out = tailscale_output(&["status", "--json"])?;
+    let json = String::from_utf8_lossy(&out);
+    let me = &json[json.find("\"Self\"")?..];
+    let name = crate::release::json_str(me, "DNSName")?;
+    Some(name.trim_end_matches('.').to_string()).filter(|n| !n.is_empty())
+}
+
+fn tailscale_output(args: &[&str]) -> Option<Vec<u8>> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let o = std::process::Command::new(TAILSCALE_EXE).args(args).creation_flags(CREATE_NO_WINDOW).output().ok()?;
+    o.status.success().then_some(o.stdout)
+}
+
+fn tailscale(args: &[&str]) {
+    match tailscale_output(args) {
+        Some(_) => crate::log::line(&format!("[update] tailscale {}", args.join(" "))),
+        None => crate::log::line(&format!("[update] tailscale {} failed", args.join(" "))),
+    }
+}
+
+/// Start the server on a background thread (never blocks the UI). Once per process.
+fn spawn() {
+    if SPAWNED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     std::thread::spawn(|| {
         ensure_tailscale_forward();
         loop {
@@ -88,6 +154,9 @@ fn handle(mut s: TcpStream) -> std::io::Result<()> {
     r.read_line(&mut line)?;
     let mut parts = line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
+    if !ENABLED.load(Ordering::SeqCst) {
+        return s.write_all(b"HTTP/1.0 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+    }
     let path = parts.next().unwrap_or("").to_string();
     let mut content_len = 0usize;
     loop {

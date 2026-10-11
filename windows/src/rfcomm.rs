@@ -23,8 +23,6 @@ use windows::Win32::Networking::WinSock::SOCKET;
 use crate::device::QResult;
 
 const AF_BTH: u16 = 32;
-/// RFCOMM server channel the 5K's GAIA endpoint listens on (DLCI 3 → channel 1).
-const CHANNEL: u32 = 1;
 
 /// Serial Port Profile UUID (0x1101) — the 5K advertises its GAIA endpoint under it.
 const SPP_UUID: windows::core::GUID = windows::core::GUID::from_u128(0x00001101_0000_1000_8000_00805f9b34fb);
@@ -58,19 +56,12 @@ pub struct Session {
 }
 
 impl Session {
-    /// Connect and run the official app's handshake: API version → init data →
-    /// register (waits for the register ACK) → stop stream.
-    ///
-    /// `channel`: the 5K's GAIA server channel. NOT fixed: after a session ends
-    /// the 5K re-registers GAIA on another channel (seen 1 → 2), and the old one
-    /// answers DM → connect() fails fast with WSA 10064. See `open_session`.
-    pub fn open(bt_addr: u64, channel: u32, on_frame: FrameSink) -> QResult<Self> {
-        Self::open_at(bt_addr, channel, windows::core::GUID::zeroed(), on_frame)
-    }
-
     /// Like the official app: let Windows look up the 5K's Serial Port service
     /// (SDP, UUID 0x1101 — the 5K's record is named "GAIA") and connect to
-    /// whatever channel it currently has (seen 1, 2, 14…).
+    /// whatever channel it currently has (seen 1, 2, 14…). Then run the official app's
+    /// handshake: API version → init data → register (waits for the ACK) → stop stream.
+    /// The only way in: the channel hops after every session, and guessing or scanning
+    /// channels left the 5K with a ghost session (see `worker::open_session`).
     pub fn open_sdp(bt_addr: u64, on_frame: FrameSink) -> QResult<Self> {
         Self::open_at(bt_addr, 0, SPP_UUID, on_frame)
     }
@@ -257,71 +248,5 @@ pub fn probe_channels(bt_addr: u64, channels: std::ops::RangeInclusive<u32>) {
             std::thread::sleep(Duration::from_millis(300));
         }
         WSACleanup();
-    }
-}
-
-/// Open ONE RFCOMM connection to `bt_addr` channel 1, send each frame in order
-/// (the device needs the whole GAIA session on a single connection), read any
-/// responses, then close.
-pub fn send_session(bt_addr: u64, frames: &[Vec<u8>]) -> QResult {
-    unsafe {
-        let mut wsa = WSADATA::default();
-        if WSAStartup(0x0202, &mut wsa) != 0 {
-            return Err("WSAStartup failed".into());
-        }
-
-        let sock = match socket(AF_BTH as i32, SOCK_STREAM, BTHPROTO_RFCOMM as i32) {
-            Ok(s) => s,
-            Err(e) => {
-                WSACleanup();
-                return Err(format!("socket() failed: {e}").into());
-            }
-        };
-
-        let sa = SOCKADDR_BTH {
-            addressFamily: AF_BTH,
-            btAddr: bt_addr,
-            serviceClassId: windows::core::GUID::zeroed(),
-            port: CHANNEL,
-        };
-        let rc = connect(
-            sock,
-            &sa as *const _ as *const SOCKADDR,
-            std::mem::size_of::<SOCKADDR_BTH>() as i32,
-        );
-        if rc == SOCKET_ERROR {
-            let e = WSAGetLastError();
-            let _ = closesocket(sock);
-            WSACleanup();
-            return Err(format!("RFCOMM connect() failed: WSA {}", e.0).into());
-        }
-        crate::log::line(&format!("[rfcomm] connected ch{CHANNEL} ({} frame(s))", frames.len()));
-
-        // 300 ms recv timeout so reads don't block forever.
-        let tmo: u32 = 300;
-        let _ = setsockopt(
-            sock,
-            SOL_SOCKET as i32,
-            SO_RCVTIMEO as i32,
-            Some(&tmo.to_ne_bytes()),
-        );
-
-        for f in frames {
-            let n = send(sock, f, SEND_RECV_FLAGS(0));
-            crate::log::line(&format!("[rfcomm] TX {} ({} b)", crate::log::hex(f), n));
-            std::thread::sleep(std::time::Duration::from_millis(120));
-            // Drain any response the device sent back.
-            let mut buf = [0u8; 256];
-            let r = recv(sock, &mut buf, SEND_RECV_FLAGS(0));
-            if r > 0 {
-                crate::log::line(&format!("[rfcomm] RX {}", crate::log::hex(&buf[..r as usize])));
-            }
-        }
-
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        let _ = closesocket(sock);
-        WSACleanup();
-        crate::log::line("[rfcomm] session done");
-        Ok(())
     }
 }

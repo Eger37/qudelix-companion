@@ -27,7 +27,7 @@ mkdir -p "$UPDATES"
 cp build/qudelix-widget.apk "$UPDATES/qudelix-widget.apk.tmp"
 mv "$UPDATES/qudelix-widget.apk.tmp" "$UPDATES/qudelix-widget.apk"
 printf '{"versionCode": %s, "versionName": "%s", "apk": "qudelix-widget.apk"}\n' "$VC" "$VN" > "$UPDATES/version.json"
-cp build/qudelix-widget.apk "$WIN_HOME/Desktop/Qudelix-Widget.apk"
+cp build/qudelix-widget.apk "$WIN_HOME/Desktop/Qudelix-Widget.apk" 2>/dev/null || true   # handy for a first install
 
 echo "published v$VN (code $VC) → http://$UPDATE_HOST:8787/version.json"
 echo "NOTE: rebuild/redeploy the Windows widget (windows/deploy.sh) so it shows v$VN too."

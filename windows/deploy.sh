@@ -8,7 +8,7 @@ source ../local.env  # WIN_HOME, WIN_HOME_WIN (see ../local.env.example)
 INSTALLED="$WIN_HOME/AppData/Local/Programs/Qudelix Widget/qudelix-widget.exe"
 LOG="$WIN_HOME/AppData/Roaming/qudelix-widget/qudelix.log"
 
-cargo build --release --target x86_64-pc-windows-gnu --features ble 2>&1 | grep -E "^error|Finished"
+RUSTFLAGS="--remap-path-prefix=$HOME=~" cargo build --release --target x86_64-pc-windows-gnu --features ble 2>&1 | grep -E "^error|Finished"
 EXE=target/x86_64-pc-windows-gnu/release/qudelix-widget.exe
 
 # Deploy like a user install: the built-in installer (`--install`) closes the
@@ -16,7 +16,7 @@ EXE=target/x86_64-pc-windows-gnu/release/qudelix-widget.exe
 # the Start-menu shortcut + autostart and starts the installed copy.
 STAGE="$WIN_HOME/AppData/Roaming/qudelix-widget/stage.exe"
 cp "$EXE" "$STAGE"
-N0=$(wc -l < "$LOG")
+N0=$( [[ -f "$LOG" ]] && wc -l < "$LOG" || echo 0 )
 # Via `cmd start`: launched directly, Windows would let the installed widget inherit
 # WSL's pipe handles and this script would wait for the widget to exit.
 (cd /mnt/c && timeout 10 cmd.exe /c start "" "$WIN_HOME_WIN\\AppData\\Roaming\\qudelix-widget\\stage.exe" --install >/dev/null 2>&1) || true

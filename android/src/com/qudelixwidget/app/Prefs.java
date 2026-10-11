@@ -39,13 +39,27 @@ public final class Prefs {
     public static int getLogo(Context c) { return p(c).getInt("logo", 0xFFFFFFFF); }
     public static void setLogo(Context c, int argb) { p(c).edit().putInt("logo", argb).apply(); }
 
-        /** Volume −/+ step, n = dB*60: 30 (0.5 dB), 60 (1 dB) or 120 (2 dB). */
+    /** Volume −/+ step, n = dB*60: 30 (0.5 dB), 60 (1 dB) or 120 (2 dB). */
     public static int getStepN(Context c) { return p(c).getInt("stepN", 60); }
     public static void setStepN(Context c, int n) { p(c).edit().putInt("stepN", n).apply(); }
 
     /** Bluetooth address of the device to control; "" = auto (first "Qudelix-5K…"). */
     public static String getDevice(Context c) { return p(c).getString("device", ""); }
     public static void setDevice(Context c, String addr) { p(c).edit().putString("device", addr).apply(); }
+
+    /** Debug over Tailscale: send the log to the PC widget and also take test builds from it. */
+    public static boolean getDebugOn(Context c) { return p(c).getBoolean("debugOn", false); }
+    public static void setDebugOn(Context c, boolean on) { p(c).edit().putBoolean("debugOn", on).apply(); }
+    /** The PC's Tailscale MagicDNS name, e.g. "my-pc.tailnet-name.ts.net"; "" = not set. */
+    public static String getDebugHost(Context c) { return p(c).getString("debugHost", ""); }
+    public static void setDebugHost(Context c, String h) { p(c).edit().putString("debugHost", h.trim()).apply(); }
+
+    /** Builds made with UPDATE_HOST (the owner's tailnet builds) switch debug on once, so
+     *  the setting survives a later update to the public GitHub build. */
+    static void seedDebug(Context c) {
+        if (BuildInfo.UPDATE_HOST.isEmpty() || p(c).contains("debugHost")) return;
+        p(c).edit().putString("debugHost", BuildInfo.UPDATE_HOST).putBoolean("debugOn", true).apply();
+    }
 
     public static String getStatus(Context c) { return p(c).getString("status", "tap ↻"); }
     public static void setStatus(Context c, String s) { p(c).edit().putString("status", s).apply(); }

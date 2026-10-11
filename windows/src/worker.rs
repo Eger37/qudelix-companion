@@ -250,15 +250,12 @@ pub fn cycle_test(rounds: u32) {
     init_com();
     let Ok(addr) = crate::ble::find_qudelix_address() else { return };
     let sink: crate::rfcomm::FrameSink = Arc::new(|_: &[u8]| {});
-    let sdp = std::env::args().any(|a| a == "--sdp");
+    // SDP only — scanning channels is what left the 5K with a ghost session.
     let try_open = || -> Option<(u32, crate::rfcomm::Session)> {
-        if sdp {
-            return crate::rfcomm::Session::open_sdp(addr, sink.clone())
-                .map_err(|e| crate::log::line(&format!("[cycle] sdp open: {e}")))
-                .ok()
-                .map(|s| (0, s));
-        }
-        (1..=MAX_CHANNEL).find_map(|ch| crate::rfcomm::Session::open(addr, ch, sink.clone()).ok().map(|s| (ch, s)))
+        crate::rfcomm::Session::open_sdp(addr, sink.clone())
+            .map_err(|e| crate::log::line(&format!("[cycle] sdp open: {e}")))
+            .ok()
+            .map(|s| (0, s))
     };
     for round in 1..=rounds {
         let t = std::time::Instant::now();
@@ -331,9 +328,6 @@ pub fn collision_test(rounds: u32) {
     }
 }
 
-/// Highest RFCOMM server channel to scan for the 5K's GAIA endpoint.
-#[cfg(feature = "ble")]
-const MAX_CHANNEL: u32 = 12;
 
 /// Build the GAIA command frame for a UI command.
 #[cfg(feature = "ble")]
@@ -438,48 +432,37 @@ pub fn probe_rfcomm(hex: &str) {
         })
         .filter(|f| !f.is_empty())
         .collect();
-    match crate::ble::find_qudelix_address() {
-        Ok(addr) => {
-            crate::log::line(&format!("[probe] --rfcomm to {addr:012X}: {} frame(s)", frames.len()));
-            match crate::rfcomm::send_session(addr, &frames) {
-                Ok(()) => crate::log::line("[probe] rfcomm -> OK"),
-                Err(e) => crate::log::line(&format!("[probe] rfcomm -> ERR: {e}")),
-            }
-        }
-        Err(e) => crate::log::line(&format!("[probe] address lookup failed: {e}")),
+    crate::log::line(&format!("[probe] --rfcomm: {} frame(s)", frames.len()));
+    match run_session(frames) {
+        Ok(()) => crate::log::line("[probe] rfcomm -> OK"),
+        Err(e) => crate::log::line(&format!("[probe] rfcomm -> ERR: {e}")),
     }
 }
 
-/// Run a minimal, CLEAN GAIA session over RFCOMM: stop any leftover status stream,
-/// open the session (register-notification), send the command, then stop the stream
-/// again so the device is left idle for the next session. We deliberately do NOT
-/// enable runtime-status streaming (the app does, for its live UI) — leaving it on
-/// wedged subsequent sessions (they got a status frame + reset instead of the ACK).
+/// CLI one-shot (`--priority`, `--volume`, `--rfcomm` without a running widget): the
+/// same SDP-found, registered session the widget uses, then the frames, then release
+/// (Session's Drop stops the stream and closes cleanly). Never a fixed or guessed
+/// channel — see `open_session`.
 #[cfg(feature = "ble")]
-fn run_session(mut cmd_frames: Vec<Vec<u8>>) -> Result<(), String> {
+fn run_session(cmd_frames: Vec<Vec<u8>>) -> Result<(), String> {
     init_com();
-    let stop_stream = vec![0xFF, 0x01, 0x00, 0x03, 0xF0, 0x01, 0x10, 0x06, 0x00, 0x00, 0x00];
-    let register = vec![0xFF, 0x01, 0x00, 0x01, 0x00, 0x0A, 0x40, 0x01, 0x12];
-
-    let mut session = vec![stop_stream.clone(), register];
-    session.append(&mut cmd_frames);
-    session.push(stop_stream); // leave the device idle/clean
-
-    let addr = crate::ble::find_qudelix_address().map_err(|e| e.to_string())?;
-    // Parallel CLI calls (e.g. a shortcut double-clicked) must not race for the
-    // single RFCOMM channel — that's what kept the 5K answering WSA 10064.
-    let _lock = RfcommLock::acquire();
+    let sink: crate::rfcomm::FrameSink = Arc::new(|_: &[u8]| {});
     let mut last = String::from("unknown");
-    // After a session the 5K needs a few seconds before it accepts a new RFCOMM
-    // page (connect() returns WSAEHOSTDOWN 10064 meanwhile). Retry patiently, ~15 s.
-    for attempt in 0..10 {
-        match crate::rfcomm::send_session(addr, &session) {
-            Ok(()) => return Ok(()),
+    // Right after another session the 5K needs a few seconds to accept a new one.
+    for attempt in 0..5 {
+        match open_session(&sink) {
+            Ok(session) => {
+                for f in &cmd_frames {
+                    session.command(f).map_err(|e| e.to_string())?;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300)); // let the 5K act before release
+                return Ok(());
+            }
+            Err(e) if e == BUSY => return Err(e), // another controller holds the 5K
             Err(e) => {
-                last = e.to_string();
-                crate::log::line(&format!("[session] attempt {attempt} failed: {last}"));
-                let backoff = (500 + attempt as u64 * 300).min(2000); // 0.5..2 s
-                std::thread::sleep(std::time::Duration::from_millis(backoff));
+                crate::log::line(&format!("[session] attempt {attempt} failed: {e}"));
+                last = e;
+                std::thread::sleep(std::time::Duration::from_millis(1000 + attempt as u64 * 500));
             }
         }
     }

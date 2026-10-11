@@ -21,11 +21,12 @@ public class App extends Application {
                 w.print(sw);
             } catch (Exception ignored) {}
             // Best effort: get the crash to the PC before the process dies.
-            Thread up = new Thread(() -> RemoteLog.post("[" + RemoteLog.tag(this) + "] CRASH\n" + sw, 2500));
+            Thread up = new Thread(() -> RemoteLog.post(this, "[" + RemoteLog.tag(this) + "] CRASH\n" + sw, 2500));
             up.start();
             try { up.join(3000); } catch (InterruptedException ignored) {}
             if (prev != null) prev.uncaughtException(t, e);
         });
+        Prefs.seedDebug(this);
         Dbg.log(this, "app start (process " + android.os.Process.myPid() + ")");
         String crash = readCrash(this);
         if (crash != null) Dbg.log(this, "previous crash:\n" + crash);
