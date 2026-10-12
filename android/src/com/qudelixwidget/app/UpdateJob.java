@@ -25,7 +25,7 @@ public class UpdateJob extends JobService {
     @Override
     public boolean onStartJob(JobParameters params) {
         new Thread(() -> {
-            Updater.checkAndInstall(this);
+            Updater.checkAndInstall(this, false);
             jobFinished(params, false);
         }, "qudelix-update").start();
         return true;

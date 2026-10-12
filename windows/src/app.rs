@@ -82,6 +82,31 @@ impl Drop for ModalGuard {
     }
 }
 
+/// Paired Bluetooth device names for ⚙ → Device, kept fresh in the background.
+static PAIRED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static PAIRED_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn paired_names() -> Vec<String> {
+    PAIRED.lock().map(|v| v.clone()).unwrap_or_default()
+}
+
+/// Re-enumerate on a helper thread (WinRT needs a COM apartment); one at a time.
+fn refresh_paired_names() {
+    use std::sync::atomic::Ordering::SeqCst;
+    if PAIRED_BUSY.swap(true, SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
+        crate::worker::init_com();
+        if let Ok(v) = crate::ble::paired_devices() {
+            if let Ok(mut g) = PAIRED.lock() {
+                *g = v.into_iter().map(|(n, _)| n).collect();
+            }
+        }
+        PAIRED_BUSY.store(false, SeqCst);
+    });
+}
+
 fn post_quit(hwnd: HWND) {
     unsafe {
         let _ = PostMessageW(hwnd, WM_APP_QUIT, WPARAM(0), LPARAM(0));
@@ -254,13 +279,10 @@ impl AppState {
             add(theme, T_CUSTOM, s.theme == ThemeMode::Custom, "Custom: background colour…");
             add(theme, A_CUSTOM, false, "Custom: accent colour…");
             sub(root, theme, "Theme");
-            // Which paired device to control (WinRT needs a COM apartment → helper thread).
-            let devices: Vec<String> = std::thread::spawn(|| {
-                crate::worker::init_com();
-                crate::ble::paired_devices().map(|v| v.into_iter().map(|(n, _)| n).collect()).unwrap_or_default()
-            })
-            .join()
-            .unwrap_or_default();
+            // Which paired device to control: the list found in the background
+            // (enumeration can take seconds — the menu must open at once).
+            let devices = paired_names();
+            refresh_paired_names();
             let chosen = config::load_device();
             let dev = CreatePopupMenu().unwrap_or_default();
             add(dev, D_AUTO, chosen.is_none(), "Auto — first “Qudelix-5K…”");
@@ -801,6 +823,7 @@ pub fn run() -> windows::core::Result<()> {
         // Read the 5K's real state shortly after start (Bluetooth may still be
         // coming up right after logon).
         SetTimer(hwnd, TIMER_STARTUP_READ, 3000, None);
+        refresh_paired_names(); // for ⚙ → Device
 
         // ── Message loop ──────────────────────────────────────────────────────
         let mut msg = MSG::default();

@@ -81,11 +81,15 @@ pub fn set_for(exe: &std::path::Path, enable: bool) {
     }
 }
 
-/// First run: turn autostart on once (the user can switch it off in the menu).
+/// First run of the installed copy: turn autostart on once (the user can switch
+/// it off in the menu). A portable copy (run from Downloads etc.) is never
+/// registered on its own — "Start with Windows" in ⚙ still works for it.
 /// The installed copy also takes over an entry that points at an older location.
 pub fn init_default() {
     if !crate::config::flag_set("autostart_init") {
-        set(true);
+        if crate::installer::is_installed_copy() {
+            set(true);
+        }
         crate::config::set_flag("autostart_init");
     } else if crate::installer::is_installed_copy() && registered().is_some() && !is_enabled() {
         set(true);

@@ -152,9 +152,7 @@ fn install(dir: &Path) -> Result<(), String> {
     if !is_installed_copy() {
         // An older installed copy may still be locked for a moment: rename it away first.
         if target.exists() {
-            let old = target.with_extension("exe.old");
-            let _ = std::fs::remove_file(&old);
-            let _ = std::fs::rename(&target, &old);
+            let _ = crate::self_update::move_aside(&target);
         }
         std::fs::copy(&me, &target).map_err(|e| format!("copy to {}: {e}", target.display()))?;
     }

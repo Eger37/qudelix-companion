@@ -156,7 +156,7 @@ public class MainActivity extends Activity {
         check.setOnClickListener(v -> {
             upd.setText("checking…");
             new Thread(() -> {
-                String r = Updater.checkAndInstall(this);
+                String r = Updater.checkAndInstall(this, true);
                 runOnUiThread(() -> upd.setText("Version " + Updater.installedVersionName(this) + " · " + r));
             }).start();
         });

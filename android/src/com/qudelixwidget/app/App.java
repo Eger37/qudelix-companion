@@ -28,8 +28,13 @@ public class App extends Application {
         });
         Prefs.seedDebug(this);
         Dbg.log(this, "app start (process " + android.os.Process.myPid() + ")");
+        // Report each crash once (it stays readable in the settings for CRASH_KEEP_MS).
         String crash = readCrash(this);
-        if (crash != null) Dbg.log(this, "previous crash:\n" + crash);
+        long crashTime = new File(getFilesDir(), "crash.txt").lastModified();
+        if (crash != null && getSharedPreferences("qudelix", MODE_PRIVATE).getLong("crashReported", 0) != crashTime) {
+            Dbg.log(this, "previous crash:\n" + crash);
+            getSharedPreferences("qudelix", MODE_PRIVATE).edit().putLong("crashReported", crashTime).apply();
+        }
         // Nothing optional may take the app down at start (that kills the widget too).
         try {
             UpdateJob.schedule(this);
@@ -43,9 +48,16 @@ public class App extends Application {
         }
     }
 
+    /** A crash report older than this is deleted instead of shown again. */
+    private static final long CRASH_KEEP_MS = 3L * 24 * 3600 * 1000;
+
     static String readCrash(android.content.Context c) {
         File f = new File(c.getFilesDir(), "crash.txt");
         if (!f.exists()) return null;
+        if (System.currentTimeMillis() - f.lastModified() > CRASH_KEEP_MS) {
+            f.delete();
+            return null;
+        }
         try {
             byte[] b = new byte[(int) f.length()];
             try (java.io.FileInputStream in = new java.io.FileInputStream(f)) { in.read(b); }

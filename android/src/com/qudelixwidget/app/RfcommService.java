@@ -85,6 +85,7 @@ public class RfcommService extends Service {
         }
         final String action = intent.getAction();
         final int value = intent.getIntExtra(EXTRA_VALUE, 0);
+        final int shownBefore = Prefs.getPriority(this);
         if (ACTION_PRIORITY.equals(action)) {
             Prefs.setPriority(this, value); // optimistic; the 5K's echo confirms it
             QudelixWidget.update(this);
@@ -94,13 +95,19 @@ public class RfcommService extends Service {
             if (seq != 0 && seq != volumeSeq.get()) return; // superseded by a newer value
             // Executor tasks swallow exceptions — surface every failure instead
             // of leaving the widget stuck on "sending…".
+            boolean sent = false;
             try {
-                handle(action, value);
+                sent = handle(action, value);
             } catch (Throwable t) {
                 Dbg.log(this, "handle failed: " + android.util.Log.getStackTraceString(t));
                 QudelixWidget.pushStatus(this, "error: " + t.getClass().getSimpleName());
                 closeSession();
                 scheduleRelease();
+            }
+            if (!sent && ACTION_PRIORITY.equals(action) && Prefs.getPriority(this) == value) {
+                // Not delivered: show what was selected before, not the failed choice.
+                Prefs.setPriority(this, shownBefore);
+                QudelixWidget.update(this);
             }
         });
         return START_NOT_STICKY;
@@ -108,18 +115,21 @@ public class RfcommService extends Service {
 
     // ── command handling (io thread) ───────────────────────────────────────────
 
-    private void handle(String action, int value) {
+    /** Runs one command; true if it reached the 5K. */
+    private boolean handle(String action, int value) {
         Dbg.log(this, "handle " + action + " value=" + value);
         cancelRelease();
         QudelixWidget.pushStatus(this, ACTION_REFRESH.equals(action) ? "reading…" : "sending…");
         boolean fresh = session == null || !session.alive;
         if (!ensureSession()) {
             scheduleRelease();
-            return;
+            return false;
         }
+        boolean sent = false;
         try {
             if (ACTION_PRIORITY.equals(action)) {
                 session.write(Proto.setPriority(value));
+                sent = true;
                 QudelixWidget.pushStatus(this, "✓");
             } else if (ACTION_VOLUME.equals(action) || ACTION_VOLUME_SET.equals(action)) {
                 // Always move from the 5K's real volume (it arrives with the init
@@ -154,6 +164,7 @@ public class RfcommService extends Service {
             QudelixWidget.pushStatus(this, "link lost — tap again");
         }
         scheduleRelease();
+        return sent;
     }
 
     /** The volume the 5K reported in this session (waits briefly for the init data), or null. */
@@ -237,11 +248,15 @@ public class RfcommService extends Service {
 
     private void scheduleRelease() {
         cancelRelease();
+        final int id = lastStartId;
         release = io.schedule(() -> {
+            // A tap that arrived meanwhile is queued behind us and schedules its own
+            // release: stopping now would drop it (and the service with it).
+            if (id != lastStartId) return;
             if (session != null) Dbg.log(this, "idle — released the 5K");
             closeSession();
             stopForeground(STOP_FOREGROUND_REMOVE);
-            stopSelf(lastStartId);
+            stopSelf(id);
         }, RELEASE_MS, TimeUnit.MILLISECONDS);
     }
 

@@ -44,6 +44,11 @@ public final class Updater {
     /** GitHub repository whose latest release carries qudelix-widget.apk. */
     public static final String GITHUB_REPO = "Eger37/qudelix-companion";
 
+    /** Background checks re-offer an update the user hasn't confirmed yet only after this. */
+    private static final long RETRY_PENDING_MS = 6L * 3600 * 1000;
+    /** Sanity cap on any download (the APK is ~100 KB). */
+    private static final int MAX_DOWNLOAD = 32 * 1024 * 1024;
+
     /** A newer build somewhere: version + where to download it. */
     private static final class Offer {
         final long code; final String name; final String url;
@@ -55,7 +60,7 @@ public final class Updater {
      * Sources: GitHub Releases (always) and the PC on the tailnet (debug mode); the
      * higher version wins, the PC on a tie (its build keeps the debug setting seeded).
      */
-    public static synchronized String checkAndInstall(Context c) {
+    public static synchronized String checkAndInstall(Context c, boolean manual) {
         long local = installedVersion(c);
         String localName = installedVersionName(c);
         Offer best = null;
@@ -85,6 +90,13 @@ public final class Updater {
             Dbg.log(c, "update: up to date (v" + localName + ")" + errors);
             return "up to date (v" + localName + ")";
         }
+        android.content.SharedPreferences p = c.getSharedPreferences("qudelix", Context.MODE_PRIVATE);
+        if (!manual && p.getLong("pendingCode", 0) == best.code
+                && System.currentTimeMillis() - p.getLong("pendingAt", 0) < RETRY_PENDING_MS) {
+            // Already downloaded and waiting for the user to confirm: don't fetch it
+            // (and prompt) again every 15 min.
+            return "v" + best.name + " waiting for confirmation";
+        }
         try {
             Dbg.log(c, "update: v" + localName + " → v" + best.name + " from " + best.url);
             File apk = new File(c.getCacheDir(), "update.apk");
@@ -92,6 +104,7 @@ public final class Updater {
                 out.write(get(c, best.url));
             }
             install(c, apk);
+            p.edit().putLong("pendingCode", best.code).putLong("pendingAt", System.currentTimeMillis()).apply();
             return "installing v" + best.name + "…";
         } catch (Exception e) {
             Dbg.log(c, "update: download/install failed: " + e);
@@ -176,7 +189,10 @@ public final class Updater {
             ByteArrayOutputStream b = new ByteArrayOutputStream();
             byte[] buf = new byte[16384];
             int r;
-            while ((r = in.read(buf)) > 0) b.write(buf, 0, r);
+            while ((r = in.read(buf)) > 0) {
+                b.write(buf, 0, r);
+                if (b.size() > MAX_DOWNLOAD) throw new Exception("download too big");
+            }
             return b.toByteArray();
         } finally {
             h.disconnect();

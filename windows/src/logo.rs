@@ -126,9 +126,9 @@ fn patch_in_place(exe: &Path, bg: u32) -> Result<(), String> {
     }
     if std::fs::rename(&tmp, exe).is_err() {
         // Running: move it aside (allowed for a running exe), then put the copy in its place.
-        let old = exe.with_extension("exe.old");
-        let _ = std::fs::remove_file(&old);
-        std::fs::rename(exe, &old).map_err(|e| format!("rename running exe: {e}"))?;
+        let old = crate::self_update::move_aside(exe).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })?;
         if let Err(e) = std::fs::rename(&tmp, exe) {
             let _ = std::fs::rename(&old, exe);
             return Err(format!("swap: {e}"));
@@ -173,7 +173,7 @@ pub fn apply(bg: u32) {
 /// fresh copy (deploy or self-update put back the default white icon).
 pub fn ensure(bg: u32) {
     if let Ok(exe) = std::env::current_exe() {
-        let _ = std::fs::remove_file(exe.with_extension("exe.old"));
+        crate::self_update::remove_old_copies(&exe);
     }
     let saved = config::load_logo_stamp();
     if bg == DEFAULT_BG && saved.is_none() {
