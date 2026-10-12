@@ -6,7 +6,8 @@
 //!   so the phone can be debugged from the PC (readable from WSL).
 //!
 //! Opt-in: ⚙ → "Phone debug over Tailscale" (widget.ini `phone_debug`). Off = no
-//! tailnet forward and every request refused. Default for a fresh install is off;
+//! tailnet forward and every request refused. The forward is kept by tailscaled
+//! and outlives the widget (requests then just fail); Uninstall removes it. Default for a fresh install is off;
 //! a PC that already has an `updates` folder (the owner's dev PC) starts with it on.
 //!
 //! Listens on 127.0.0.1 only; Tailscale forwards tailnet port 8787 to it
@@ -27,6 +28,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use crate::win::app_dir;
 
 /// Tailnet-facing port (what the phone uses) and our local backend port.
 pub const PORT: u16 = 8787;
@@ -141,8 +144,14 @@ pub fn set_enabled(on: bool) {
             spawn();
         }
     } else {
-        std::thread::spawn(|| tailscale(&["serve", &format!("--http={PORT}"), "off"]));
+        std::thread::spawn(remove_forward);
     }
+}
+
+/// Drop the tailnet forward. It lives in tailscaled, not in this process, so it
+/// outlasts the widget: switching phone debug off and uninstalling remove it.
+pub fn remove_forward() {
+    tailscale(&["serve", &format!("--http={PORT}"), "off"]);
 }
 
 /// This PC's Tailscale MagicDNS name (what to enter on the phone), if Tailscale runs.
@@ -156,8 +165,11 @@ pub fn tailnet_name() -> Option<String> {
 
 fn tailscale_output(args: &[&str]) -> Option<Vec<u8>> {
     use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let o = std::process::Command::new(TAILSCALE_EXE).args(args).creation_flags(CREATE_NO_WINDOW).output().ok()?;
+    let o = std::process::Command::new(TAILSCALE_EXE)
+        .args(args)
+        .creation_flags(crate::win::CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
     o.status.success().then_some(o.stdout)
 }
 
@@ -204,11 +216,10 @@ fn spawn() {
 /// Point tailnet :PORT at our local backend. Idempotent; persists in tailscaled.
 fn ensure_tailscale_forward() {
     use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let target = format!("http://127.0.0.1:{LOCAL_PORT}");
     let r = std::process::Command::new(TAILSCALE_EXE)
         .args(["serve", "--bg", &format!("--http={PORT}"), &target])
-        .creation_flags(CREATE_NO_WINDOW)
+        .creation_flags(crate::win::CREATE_NO_WINDOW)
         .output();
     match r {
         Ok(o) if o.status.success() => crate::log::line(&format!("[update] tailnet :{PORT} → {target}")),
@@ -218,13 +229,6 @@ fn ensure_tailscale_forward() {
         )),
         Err(e) => crate::log::line(&format!("[update] tailscale not found: {e}")),
     }
-}
-
-fn app_dir() -> PathBuf {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("qudelix-widget")
 }
 
 fn updates_dir() -> PathBuf {
@@ -268,7 +272,8 @@ fn handle(mut s: TcpStream) -> std::io::Result<()> {
     }
     if !key_matches(&key, &phone_key()) {
         locked_out(true);
-        crate::log::line(&format!("[update] {peer} {method} {path}: wrong or missing key"));
+        // {:?}: client-supplied text can't forge extra log lines.
+        crate::log::line(&format!("[update] {peer:?} {method:?} {path:?}: wrong or missing key"));
         return s.write_all(b"HTTP/1.0 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
     }
     if method == "POST" && path == "/log" {
@@ -292,7 +297,7 @@ fn handle(mut s: TcpStream) -> std::io::Result<()> {
         }
         return s.write_all(b"HTTP/1.0 204 No Content\r\n\r\n");
     }
-    crate::log::line(&format!("[update] {peer} {method} {path}"));
+    crate::log::line(&format!("[update] {peer:?} {method:?} {path:?}"));
     let path = path.as_str();
     let Some(&(name, ctype)) = FILES.iter().find(|(p, _)| *p == path) else {
         return s.write_all(b"HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n");

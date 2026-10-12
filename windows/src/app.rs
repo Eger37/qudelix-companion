@@ -4,18 +4,13 @@
 //! Rainmeter "stay on desktop" style): normal windows cover it and it is NOT
 //! hidden by Win+D / "Show desktop".
 //!
-//! Default (`bottom`, user-verified against Win+D): a top-level tool window
-//! kept directly ABOVE the desktop window (`desktop_slot` — NOT `HWND_BOTTOM`,
-//! which on current Windows 11 lands *under* Progman: invisible until the shell
-//! reshuffles, e.g. on the Win key), OWNED by the desktop (`Progman`), plus guards that
-//! re-show it whenever the shell hides/minimizes it (WM_SHOWWINDOW / WM_SIZE /
-//! SC_MINIMIZE / SWP_HIDEWINDOW) and a 700 ms watchdog.
-//!
-//! Opt-in alternatives (env vars, kept for experiments):
-//!   * `QUDELIX_GADGET_MODE=desktop` — become a *child* of the shell window that
-//!     hosts the icon view (`Progman`/icon `WorkerW`). Rendering and Explorer
-//!     stability were worse, hence not the default.
-//!   * `QUDELIX_SHOWDESKTOP_FLOAT=1` — float TOPMOST while Show Desktop is active.
+//! User-verified against Win+D: a top-level tool window kept directly ABOVE the
+//! desktop window (`desktop_slot` — NOT `HWND_BOTTOM`, which on current
+//! Windows 11 lands *under* Progman: invisible until the shell reshuffles, e.g.
+//! on the Win key), OWNED by the desktop (`Progman`), plus guards that re-show
+//! it whenever the shell hides/minimizes it (WM_SHOWWINDOW / WM_SIZE /
+//! SC_MINIMIZE / SWP_HIDEWINDOW) and a 700 ms watchdog. (Parenting into the
+//! shell's icon view was tried and dropped: worse rendering, Explorer hangs.)
 //!
 //! UI (custom-drawn, see `ui.rs`; follows the Windows light/dark theme): a
 //! segmented source-priority control (USB / A2DP 1 / A2DP 2), volume −/+ that
@@ -25,9 +20,7 @@
 use std::ffi::c_void;
 
 use windows::core::{w, HSTRING, PCWSTR};
-use windows::Win32::Foundation::{
-    GetLastError, ERROR_ALREADY_EXISTS, HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
-};
+use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, ScreenToClient, UpdateWindow, PAINTSTRUCT};
@@ -36,7 +29,6 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
-use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -51,8 +43,7 @@ const TIMER_STARTUP_READ: usize = 3;
 const TIMER_REPEAT: usize = 2;
 const REPEAT_DELAY_MS: u32 = 380;
 const REPEAT_EVERY_MS: u32 = 90;
-const WM_APP_RESHOW: u32 = WM_APP + 1; // Bottom mode: undo a shell hide/minimize
-const WM_APP_FOREGROUND: u32 = WM_APP + 4; // foreground changed → re-check Show Desktop
+const WM_APP_RESHOW: u32 = WM_APP + 1; // undo a shell hide/minimize
 /// Quit (Close, Uninstall, or the updated exe is starting). Always posted, never
 /// handled inline: `DestroyWindow` frees `AppState`, which the caller may still
 /// be using. Deferred while the settings menu or one of its dialogs is open.
@@ -125,23 +116,10 @@ pub const CLASS_NAME: PCWSTR = w!("QudelixWidgetClass");
 const VOLUME_MIN_N: i16 = -3600; // -60 dB
 const VOLUME_MAX_N: i16 = 0; // 0 dB (official app slider: -60…0)
 
-/// How the gadget is anchored to the desktop.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    /// Child of the desktop shell (`Progman`/icon `WorkerW`) — immune to Show Desktop.
-    Desktop,
-    /// Top-level window kept at the bottom of the Z-order (fallback).
-    Bottom,
-}
-
 struct AppState {
     /// The transport lives on a background thread; the UI only sends commands and
     /// polls status. This keeps blocking BLE/HID off the message loop (no freeze).
     worker: Worker,
-    parent: HWND, // Progman/WorkerW in Desktop mode; null in Bottom mode
-    mode: Mode,
-    /// Manual drag (Desktop mode): cursor screen pos + window screen pos at press.
-    drag: Option<(i32, i32, i32, i32)>,
     settings: Settings,
     theme: ui::Theme,
     fonts: ui::Fonts,
@@ -153,8 +131,6 @@ struct AppState {
     /// Last device state read back from the 5K.
     shown: crate::state::DevState,
     selected: Option<u8>,
-    /// Bottom mode: temporarily TOPMOST while "Show desktop" (Win+D) is active.
-    raised: bool,
     volume_n: i16,
     volume_known: bool,
 }
@@ -260,11 +236,11 @@ impl AppState {
         unsafe {
             let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
             let add = |m: HMENU, id: usize, on: bool, text: &str| {
-                let w: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+                let w = crate::win::wide(text);
                 let _ = AppendMenuW(m, MF_STRING | check(on), id, PCWSTR(w.as_ptr()));
             };
             let sub = |root: HMENU, m: HMENU, text: &str| {
-                let w: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+                let w = crate::win::wide(text);
                 let _ = AppendMenuW(root, MF_POPUP, m.0 as usize, PCWSTR(w.as_ptr()));
             };
             let s = self.settings;
@@ -430,32 +406,6 @@ impl AppState {
         invalidate(hwnd);
     }
 
-    /// Bottom mode: float above the raised desktop during Show Desktop, drop back
-    /// to the bottom as soon as an app window is on top again.
-    fn sync_show_desktop(&mut self, hwnd: HWND) {
-        if self.mode != Mode::Bottom
-            || WIDGET_HWND.load(std::sync::atomic::Ordering::SeqCst) == 0
-        {
-            return;
-        }
-        let shown = unsafe { desktop_on_top(hwnd) };
-        if shown == self.raised {
-            return;
-        }
-        self.raised = shown;
-        crate::log::line(&format!("[anchor] show-desktop {}", if shown { "on → topmost" } else { "off → bottom" }));
-        unsafe {
-            let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW;
-            if shown {
-                let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
-            } else {
-                // Leave the topmost band first, then sink to the bottom.
-                let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
-                let _ = SetWindowPos(hwnd, desktop_slot(hwnd), 0, 0, 0, 0, flags);
-            }
-        }
-    }
-
     /// Absolute volume forwarded from the CLI.
     fn set_volume_abs(&mut self, hwnd: HWND, n: i16) {
         crate::log::line(&format!("[cli] volume n={n}"));
@@ -465,23 +415,35 @@ impl AppState {
         invalidate(hwnd);
     }
 
-    /// Save the current window position (parent-relative) to disk.
+    /// Save the current window position (screen coordinates) to disk.
     fn save_position(&self, hwnd: HWND) {
         unsafe {
             let mut wr = RECT::default();
-            if GetWindowRect(hwnd, &mut wr).is_err() {
-                return;
+            if GetWindowRect(hwnd, &mut wr).is_ok() {
+                config::save_pos(Pos { x: wr.left, y: wr.top });
             }
-            let (mut ox, mut oy) = (0, 0);
-            if self.mode == Mode::Desktop && !self.parent.0.is_null() {
-                let mut pr = RECT::default();
-                if GetWindowRect(self.parent, &mut pr).is_ok() {
-                    ox = pr.left;
-                    oy = pr.top;
-                }
-            }
-            config::save_pos(Pos { x: wr.left - ox, y: wr.top - oy });
         }
+    }
+
+    /// Moved to a monitor with another scale (or the scale changed): re-scale
+    /// fonts and layout and take the size Windows suggests at the new position.
+    fn on_dpi_changed(&mut self, hwnd: HWND, dpi: u32, suggested: &RECT) {
+        self.scale = dpi.max(96) as f32 / 96.0;
+        self.fonts = ui::Fonts::new(self.scale);
+        let px = |v: i32| (v as f32 * self.scale).round() as i32;
+        crate::log::line(&format!("[dpi] {dpi} dpi (scale {:.2})", self.scale));
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                suggested.left,
+                suggested.top,
+                px(ui::WIDTH),
+                px(ui::HEIGHT),
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        invalidate(hwnd);
     }
 }
 
@@ -515,16 +477,29 @@ fn spawn_update_check(hwnd: HWND, status: std::sync::Arc<std::sync::Mutex<String
     std::thread::spawn(move || run_update_check(raw, &status, manual));
 }
 
+/// One update check at a time (manual + automatic would download twice and race
+/// on the exe swap).
+static UPDATE_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn run_update_check(hwnd_raw: isize, status: &std::sync::Mutex<String>, manual: bool) {
+    use std::sync::atomic::Ordering::SeqCst;
     let note = |s: String| {
         if let Ok(mut g) = status.lock() {
             *g = s;
         }
     };
+    if UPDATE_BUSY.swap(true, SeqCst) {
+        if manual {
+            note("update check already running…".into());
+        }
+        return;
+    }
     if manual {
         note("checking for updates…".into());
     }
-    match crate::self_update::check_and_apply() {
+    let result = crate::self_update::check_and_apply();
+    UPDATE_BUSY.store(false, SeqCst);
+    match result {
         Ok(crate::self_update::Outcome::UpToDate(v)) => {
             if manual {
                 note(format!("up to date (v{v})"));
@@ -665,50 +640,6 @@ pub fn run() -> windows::core::Result<()> {
         let px = |v: i32| (v as f32 * scale).round() as i32;
         let _gdiplus = ui::gdiplus_start(); // kept for the process lifetime
 
-        // ── Pin to the desktop ────────────────────────────────────────────────
-        // Default = Bottom: a top-level window at the bottom of the Z-order. It
-        // renders its child controls correctly and does not touch the shell
-        // (parenting into Progman broke rendering and could hang Explorer). Show
-        // Desktop is defeated by the re-show guard in the window proc. The
-        // shell-child "Desktop" mode is opt-in via QUDELIX_GADGET_MODE=desktop.
-        let requested = std::env::var("QUDELIX_GADGET_MODE").unwrap_or_default();
-        let want_desktop = requested.eq_ignore_ascii_case("desktop");
-
-        let (mode, parent) = if !want_desktop {
-            crate::log::line("[anchor] Bottom mode (default)");
-            (Mode::Bottom, HWND::default())
-        } else if let Some((host, name)) = find_desktop_host() {
-            // A child window must have WS_CHILD (not WS_POPUP) when reparented.
-            let cur = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
-            let child = (cur & !WS_POPUP.0) | WS_CHILD.0;
-            SetWindowLongPtrW(hwnd, GWL_STYLE, child as isize);
-            match SetParent(hwnd, host) {
-                Ok(_) => {
-                    crate::log::line(&format!(
-                        "[anchor] Desktop mode: parented to {name} (hwnd {:?})",
-                        host.0
-                    ));
-                    (Mode::Desktop, host)
-                }
-                Err(e) => {
-                    // Restore the popup style and fall back.
-                    let back = (child & !WS_CHILD.0) | WS_POPUP.0;
-                    SetWindowLongPtrW(hwnd, GWL_STYLE, back as isize);
-                    crate::log::line(&format!(
-                        "[anchor] SetParent({name}) failed: {e} -> Bottom mode"
-                    ));
-                    (Mode::Bottom, HWND::default())
-                }
-            }
-        } else {
-            crate::log::line("[anchor] no desktop shell host found -> Bottom mode");
-            (Mode::Bottom, HWND::default())
-        };
-        crate::log::line(&format!(
-            "[anchor] final mode: {}",
-            if mode == Mode::Desktop { "desktop" } else { "bottom" }
-        ));
-
         // ── State ─────────────────────────────────────────────────────────────
         // The transport runs on its own thread; the UI never blocks on BLE/HID.
         let worker = Worker::start();
@@ -719,9 +650,6 @@ pub fn run() -> windows::core::Result<()> {
         let (last_priority, last_volume) = config::load_last_state();
         let state = Box::new(AppState {
             worker,
-            parent,
-            mode,
-            drag: None,
             settings,
             theme,
             fonts: ui::Fonts::new(scale),
@@ -731,7 +659,6 @@ pub fn run() -> windows::core::Result<()> {
             status: String::new(),
             shown: crate::state::DevState::default(),
             selected: last_priority,
-            raised: false,
             volume_n: last_volume.unwrap_or(-1200),
             volume_known: last_volume.is_some(),
         });
@@ -740,68 +667,33 @@ pub fn run() -> windows::core::Result<()> {
 
         // ── Place + show (never activate) ─────────────────────────────────────
         let saved = config::load_pos().unwrap_or(Pos { x: 120, y: 120 });
-        let sized_w = px(ui::WIDTH);
-        let sized_h = px(ui::HEIGHT);
-        match mode {
-            Mode::Desktop => {
-                // Coordinates are relative to the host's client area. HWND_TOP puts
-                // us above the icon view in the host's child z-order (visible).
-                SetWindowPos(
-                    hwnd,
-                    HWND_TOP,
-                    saved.x,
-                    saved.y,
-                    sized_w,
-                    sized_h,
-                    SWP_NOACTIVATE,
-                )?;
-            }
-            Mode::Bottom => {
-                SetWindowPos(
-                    hwnd,
-                    desktop_slot(hwnd),
-                    saved.x,
-                    saved.y,
-                    sized_w,
-                    sized_h,
-                    SWP_NOACTIVATE,
-                )?;
-            }
-        }
+        SetWindowPos(
+            hwnd,
+            desktop_slot(hwnd),
+            saved.x,
+            saved.y,
+            px(ui::WIDTH),
+            px(ui::HEIGHT),
+            SWP_NOACTIVATE,
+        )?;
         // Win+D doesn't hide windows on Win10/11 — it raises the desktop window over
-        // every normal window, so a bottom-pinned gadget ends up *under* it. Watch
-        // foreground changes and float the gadget above while the desktop is shown.
+        // every normal window, so a bottom-pinned gadget would end up *under* it.
         // Make the DESKTOP (Progman) the window's OWNER — user-verified that this
         // plus the watchdog survives Win+D (2026-10-09).
-        if mode == Mode::Bottom {
-            if let Ok(progman) = FindWindowW(w!("Progman"), PCWSTR::null()) {
-                if !progman.0.is_null() {
-                    SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman.0 as isize);
-                    // Changing the owner doesn't reorder: put us right above the desktop now.
-                    let _ = SetWindowPos(
-                        hwnd,
-                        desktop_slot(hwnd),
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                    );
-                }
+        if let Ok(progman) = FindWindowW(w!("Progman"), PCWSTR::null()) {
+            if !progman.0.is_null() {
+                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, progman.0 as isize);
+                // Changing the owner doesn't reorder: put us right above the desktop now.
+                let _ = SetWindowPos(
+                    hwnd,
+                    desktop_slot(hwnd),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
             }
-        }
-        // Alternative (untested on hardware), opt-in: QUDELIX_SHOWDESKTOP_FLOAT=1.
-        if mode == Mode::Bottom && std::env::var("QUDELIX_SHOWDESKTOP_FLOAT").as_deref() == Ok("1") {
-            WIDGET_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::SeqCst);
-            let _ = SetWinEventHook(
-                EVENT_SYSTEM_FOREGROUND,
-                EVENT_SYSTEM_FOREGROUND,
-                HMODULE::default(),
-                Some(on_foreground),
-                0,
-                0,
-                WINEVENT_OUTOFCONTEXT,
-            );
         }
 
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -855,8 +747,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_ERASEBKGND => LRESULT(1), // everything is painted in WM_PAINT (no flicker)
         // Press on an element: capture the mouse; volume acts at once and repeats
-        // while held. Press on the background: drag the gadget (Bottom mode uses
-        // the system move loop; as a desktop child we drag manually).
+        // while held. Press on the background: drag the gadget (system move loop);
+        // a press that doesn't move it is a Refresh.
         WM_LBUTTONDOWN => {
             if state_ptr.is_null() {
                 return LRESULT(0);
@@ -877,13 +769,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     SetTimer(hwnd, TIMER_REPEAT, REPEAT_DELAY_MS, None);
                 }
                 invalidate(hwnd);
-            } else if st.mode == Mode::Desktop {
-                let mut cp = POINT::default();
-                let mut wr = RECT::default();
-                if GetCursorPos(&mut cp).is_ok() && GetWindowRect(hwnd, &mut wr).is_ok() {
-                    st.drag = Some((cp.x, cp.y, wr.left, wr.top));
-                    SetCapture(hwnd);
-                }
             } else {
                 let mut before = RECT::default();
                 let _ = GetWindowRect(hwnd, &mut before);
@@ -903,23 +788,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_MOUSEMOVE => {
             if !state_ptr.is_null() {
                 let st = &mut *state_ptr;
-                if let Some((cx, cy, wx, wy)) = st.drag {
-                    let mut cp = POINT::default();
-                    let mut pr = RECT::default();
-                    if GetCursorPos(&mut cp).is_ok() && GetWindowRect(st.parent, &mut pr).is_ok() {
-                        let nx = wx + (cp.x - cx) - pr.left;
-                        let ny = wy + (cp.y - cy) - pr.top;
-                        let _ = SetWindowPos(
-                            hwnd,
-                            HWND_TOP,
-                            nx,
-                            ny,
-                            0,
-                            0,
-                            SWP_NOSIZE | SWP_NOACTIVATE,
-                        );
-                    }
-                } else if st.pressed == Some(Hit::Bar) {
+                if st.pressed == Some(Hit::Bar) {
                     st.on_bar(hwnd, lp.0 as i16 as i32); // dragging the volume bar
                 } else {
                     let (x, y) = (lp.0 as i16 as i32, (lp.0 >> 16) as i16 as i32);
@@ -950,15 +819,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 return LRESULT(0);
             }
             let st = &mut *state_ptr;
-            if let Some((_, _, wx, wy)) = st.drag.take() {
-                let _ = ReleaseCapture();
-                st.save_position(hwnd);
-                let mut wr = RECT::default();
-                if GetWindowRect(hwnd, &mut wr).is_ok() && (wr.left, wr.top) == (wx, wy) {
-                    crate::log::line("[click] background → refresh");
-                    st.worker.refresh();
-                }
-            } else if let Some(hit) = st.pressed.take() {
+            if let Some(hit) = st.pressed.take() {
                 let _ = KillTimer(hwnd, TIMER_REPEAT);
                 let _ = ReleaseCapture();
                 let (x, y) = (lp.0 as i16 as i32, (lp.0 >> 16) as i16 as i32);
@@ -994,16 +855,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             DefWindowProcW(hwnd, msg, wp, lp)
         }
-        // Safety net (Bottom mode): if Show Desktop / the shell hides, minimizes
-        // or refuses us, bounce back. Re-show is posted, not done inline.
+        // Safety net: if Show Desktop / the shell hides, minimizes or refuses us,
+        // bounce back. Re-show is posted, not done inline.
         WM_SHOWWINDOW => {
-            if !state_ptr.is_null() && (*state_ptr).mode == Mode::Bottom && wp.0 == 0 && lp.0 != 0 {
+            if !state_ptr.is_null() && wp.0 == 0 && lp.0 != 0 {
                 let _ = PostMessageW(hwnd, WM_APP_RESHOW, WPARAM(0), LPARAM(0));
             }
             DefWindowProcW(hwnd, msg, wp, lp)
         }
         WM_SIZE => {
-            if !state_ptr.is_null() && (*state_ptr).mode == Mode::Bottom && wp.0 == SIZE_MINIMIZED as usize {
+            if !state_ptr.is_null() && wp.0 == SIZE_MINIMIZED as usize {
                 let _ = PostMessageW(hwnd, WM_APP_RESHOW, WPARAM(0), LPARAM(0));
             }
             DefWindowProcW(hwnd, msg, wp, lp)
@@ -1046,18 +907,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             LRESULT(0)
         }
-        WM_APP_FOREGROUND => {
-            if !state_ptr.is_null() {
-                (*state_ptr).sync_show_desktop(hwnd);
+        WM_DPICHANGED => {
+            if !state_ptr.is_null() && lp.0 != 0 {
+                (*state_ptr).on_dpi_changed(hwnd, (wp.0 & 0xFFFF) as u32, &*(lp.0 as *const RECT));
             }
             LRESULT(0)
         }
         WM_APP_RESHOW => {
-            let raised = !state_ptr.is_null() && (*state_ptr).raised;
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             let _ = SetWindowPos(
                 hwnd,
-                if raised { HWND_TOPMOST } else { desktop_slot(hwnd) },
+                desktop_slot(hwnd),
                 0,
                 0,
                 0,
@@ -1096,28 +956,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             if !state_ptr.is_null() && wp.0 == TIMER_REFRESH {
                 (*state_ptr).refresh_status(hwnd);
-                (*state_ptr).sync_show_desktop(hwnd);
                 // Desktop-gadget watchdog: whatever "Show desktop" (Win+D) did —
                 // hide or minimize us — put the gadget back on the desktop. This
                 // catches every hide path the event-based guards miss.
-                if (*state_ptr).mode == Mode::Bottom
-                    && (IsIconic(hwnd).as_bool() || !IsWindowVisible(hwnd).as_bool())
-                {
+                if IsIconic(hwnd).as_bool() || !IsWindowVisible(hwnd).as_bool() {
                     let _ = PostMessageW(hwnd, WM_APP_RESHOW, WPARAM(0), LPARAM(0));
                 }
             }
             LRESULT(0)
         }
-        // Bottom-mode safety net: stay at the bottom, and REFUSE to be hidden.
+        // Safety net: stay at the bottom, and REFUSE to be hidden.
         // "Show desktop" (Win+D) hides top-level windows via SWP_HIDEWINDOW — strip
         // that flag so the gadget stays visible on the desktop. (The WM_SHOWWINDOW/
         // WM_SIZE re-show guard doesn't catch this path.)
         WM_WINDOWPOSCHANGING => {
-            if !state_ptr.is_null() && (*state_ptr).mode == Mode::Bottom {
+            if !state_ptr.is_null() {
                 let wpos = lp.0 as *mut WINDOWPOS;
                 if !wpos.is_null() && ((*wpos).flags & SWP_NOZORDER).0 == 0 {
-                    (*wpos).hwndInsertAfter =
-                        if (*state_ptr).raised { HWND_TOPMOST } else { desktop_slot(hwnd) };
+                    (*wpos).hwndInsertAfter = desktop_slot(hwnd);
                 }
                 if !wpos.is_null() {
                     (*wpos).flags &= !SWP_HIDEWINDOW;
@@ -1156,44 +1012,6 @@ unsafe fn desktop_slot(me: HWND) -> HWND {
     above
 }
 
-// ── Desktop-host discovery (the window that hosts the icon view) ───────────────
-
-/// Find the shell window to parent onto: whichever window contains
-/// `SHELLDLL_DefView` (the icons). On current Windows 11 that is `Progman`
-/// itself; on older layouts it is a top-level `WorkerW`. Parenting there (and
-/// raising to HWND_TOP) renders above the icons/wallpaper, unlike the
-/// wallpaper-only `WorkerW`, which is hidden beneath. Falls back to `Progman`.
-fn find_desktop_host() -> Option<(HWND, &'static str)> {
-    unsafe {
-        let progman = FindWindowW(w!("Progman"), PCWSTR::null()).ok()?;
-        if let Ok(d) = FindWindowExW(progman, HWND::default(), w!("SHELLDLL_DefView"), PCWSTR::null()) {
-            if !d.0.is_null() {
-                return Some((progman, "Progman"));
-            }
-        }
-        let mut found = HWND::default();
-        let _ = EnumWindows(Some(enum_icon_host), LPARAM(&mut found as *mut HWND as isize));
-        if !found.0.is_null() {
-            Some((found, "WorkerW(icon host)"))
-        } else {
-            Some((progman, "Progman(fallback)"))
-        }
-    }
-}
-
-/// EnumWindows callback: find the top-level window that hosts `SHELLDLL_DefView`.
-unsafe extern "system" fn enum_icon_host(top: HWND, lparam: LPARAM) -> windows::Win32::Foundation::BOOL {
-    use windows::Win32::Foundation::{FALSE, TRUE};
-
-    if let Ok(d) = FindWindowExW(top, HWND::default(), w!("SHELLDLL_DefView"), PCWSTR::null()) {
-        if !d.0.is_null() {
-            *(lparam.0 as *mut HWND) = top;
-            return FALSE; // stop enumerating
-        }
-    }
-    TRUE
-}
-
 // ── Small Win32 helpers ────────────────────────────────────────────────────────
 
 /// If a widget instance is running, hand it a CLI command and return true.
@@ -1204,58 +1022,4 @@ pub fn forward_to_widget(msg: u32, wparam: usize) -> bool {
             _ => false,
         }
     }
-}
-
-/// Our window, for the out-of-context WinEvent callback (it has no user data).
-static WIDGET_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-
-unsafe extern "system" fn on_foreground(
-    _hook: HWINEVENTHOOK,
-    _event: u32,
-    _hwnd: HWND,
-    _id_object: i32,
-    _id_child: i32,
-    _thread: u32,
-    _time: u32,
-) {
-    let h = WIDGET_HWND.load(std::sync::atomic::Ordering::SeqCst);
-    if h != 0 {
-        let _ = PostMessageW(HWND(h as *mut c_void), WM_APP_FOREGROUND, WPARAM(0), LPARAM(0));
-    }
-}
-
-/// True when the desktop shell window is the top-most *normal* window, i.e.
-/// Show Desktop is active (or everything is minimized). Merely clicking the
-/// wallpaper focuses the desktop without raising it, so that doesn't count.
-unsafe fn desktop_on_top(me: HWND) -> bool {
-    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
-    let mut h = GetTopWindow(None).unwrap_or_default();
-    while !h.0.is_null() {
-        let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
-        let mut cloaked: u32 = 0;
-        let _ = DwmGetWindowAttribute(
-            h,
-            DWMWA_CLOAKED,
-            &mut cloaked as *mut u32 as *mut c_void,
-            std::mem::size_of::<u32>() as u32,
-        );
-        let mut r = RECT::default();
-        let _ = GetWindowRect(h, &mut r);
-        let skip = h == me
-            || !IsWindowVisible(h).as_bool()
-            || IsIconic(h).as_bool()
-            || cloaked != 0
-            || ex & WS_EX_TOPMOST.0 != 0
-            || ex & WS_EX_TRANSPARENT.0 != 0
-            || r.right - r.left <= 1
-            || r.bottom - r.top <= 1;
-        if !skip {
-            let mut buf = [0u16; 32];
-            let n = GetClassNameW(h, &mut buf) as usize;
-            let class = String::from_utf16_lossy(&buf[..n]);
-            return class == "WorkerW" || class == "Progman";
-        }
-        h = GetWindow(h, GW_HWNDNEXT).unwrap_or_default();
-    }
-    false
 }

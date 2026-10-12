@@ -65,6 +65,7 @@ pub fn maybe_offer_install() -> bool {
     if is_installed_copy()
         || crate::config::flag_set("install_declined")
         || std::env::var_os("QUDELIX_PORTABLE").is_some()
+        || running_widget().is_some() // a widget already runs: this start just exits
     {
         return false;
     }
@@ -141,7 +142,7 @@ pub fn install_silent() -> Result<(), String> {
 fn install(dir: &Path) -> Result<(), String> {
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let target = dir.join(EXE_NAME);
-    close_running_widget();
+    let old_pid = close_running_widget();
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     // First install (not an update/redeploy): also put a shortcut on the
     // desktop. Later installs leave the desktop alone, so a deleted shortcut
@@ -177,8 +178,13 @@ fn install(dir: &Path) -> Result<(), String> {
     crate::config::set_flag("autostart_init");
     // Detached stdio: an inherited console/pipe would keep the caller (e.g. a
     // WSL shell running `--install`) waiting until the widget exits.
-    std::process::Command::new(&target)
-        .stdin(std::process::Stdio::null())
+    let mut cmd = std::process::Command::new(&target);
+    // The closed widget may still be shutting down (releasing the 5K) and hold
+    // the single-instance mutex: the new copy waits for it to exit first.
+    if let Some(pid) = old_pid {
+        cmd.args(["--wait-pid", &pid.to_string()]);
+    }
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -187,21 +193,27 @@ fn install(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Ask a running widget (any copy) to close, and give it a moment.
-fn close_running_widget() {
+/// The window of a running widget (any copy), if there is one.
+fn running_widget() -> Option<HWND> {
+    unsafe { FindWindowW(crate::app::CLASS_NAME, PCWSTR::null()).ok().filter(|h| !h.is_invalid()) }
+}
+
+/// Ask a running widget (any copy) to close, and give it a moment. Returns its
+/// process id, so the next copy can wait until that process is really gone.
+fn close_running_widget() -> Option<u32> {
+    let h = running_widget()?;
+    let mut pid = 0u32;
     unsafe {
-        if let Ok(h) = FindWindowW(crate::app::CLASS_NAME, PCWSTR::null()) {
-            if !h.is_invalid() {
-                let _ = PostMessageW(h, WM_CLOSE, None, None);
-                for _ in 0..30 {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    if FindWindowW(crate::app::CLASS_NAME, PCWSTR::null()).map_or(true, |h| h.is_invalid()) {
-                        break;
-                    }
-                }
-            }
+        GetWindowThreadProcessId(h, Some(&mut pid));
+        let _ = PostMessageW(h, WM_CLOSE, None, None);
+    }
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if running_widget().is_none() {
+            break;
         }
     }
+    (pid != 0).then_some(pid)
 }
 
 fn create_shortcut(target: &Path, lnk: &Path) -> Result<(), String> {
@@ -221,9 +233,9 @@ fn create_shortcut(target: &Path, lnk: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// ⚙ → Uninstall: remove autostart + shortcut, delete the install folder after
-/// we exit. Settings in %APPDATA%\qudelix-widget stay. Returns true if the
-/// caller should close the widget.
+/// ⚙ → Uninstall: remove autostart, the shortcuts and the Tailscale forward;
+/// delete the install folder after we exit. Settings in %APPDATA%\qudelix-widget
+/// stay. Returns true if the caller should close the widget.
 pub fn uninstall(owner: HWND) -> bool {
     let answer = unsafe {
         MessageBoxW(
@@ -240,17 +252,52 @@ pub fn uninstall(owner: HWND) -> bool {
     for lnk in [shortcut_path(), desktop_shortcut_path()].into_iter().flatten() {
         let _ = std::fs::remove_file(lnk);
     }
+    if crate::update_server::enabled() {
+        crate::update_server::remove_forward();
+    }
     if is_installed_copy() {
-        if let Some(dir) = install_dir() {
-            // The running exe can't delete itself: a hidden cmd waits, then removes the folder.
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            let _ = std::process::Command::new("cmd.exe")
-                .raw_arg(format!("/c ping 127.0.0.1 -n 3 >nul & rmdir /s /q \"{}\"", dir.display()))
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn();
+        if let Err(e) = spawn_remover() {
+            crate::log::line(&format!("[install] could not start the folder cleanup: {e}"));
         }
     }
     crate::log::line("[install] uninstalled");
     true
+}
+
+/// The running exe can't delete its own folder: a copy of it in %TEMP% waits
+/// for this process to exit, then removes the install folder (`--remove-install`).
+/// No shell, no paths on a command line — the copy works out the folder itself.
+fn spawn_remover() -> Result<(), String> {
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let pid = std::process::id();
+    let tmp = std::env::temp_dir().join(format!("qudelix-widget-uninstall-{pid}.exe"));
+    std::fs::copy(&me, &tmp).map_err(|e| format!("copy to {}: {e}", tmp.display()))?;
+    std::process::Command::new(&tmp)
+        .args(["--wait-pid", &pid.to_string(), "--remove-install"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// `--remove-install` (the %TEMP% copy, after the widget exited): delete
+/// `%LOCALAPPDATA%\Programs\Qudelix Widget`. Retries while a file is still locked.
+pub fn remove_install() {
+    let Some(dir) = install_dir() else { return };
+    if is_installed_copy() {
+        return; // never from inside the folder being deleted
+    }
+    for _ in 0..20 {
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {
+                crate::log::line(&format!("[install] removed {}", dir.display()));
+                return;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(500)),
+        }
+    }
+    crate::log::line(&format!("[install] could not remove {} (files in use?)", dir.display()));
 }

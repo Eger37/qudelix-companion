@@ -1,12 +1,11 @@
 //! Transport-agnostic control surface for the Qudelix 5K.
 //!
-//! The UI talks to the device only through [`Qudelix`]. Today there is one impl,
-//! [`crate::usb::UsbHid`]; a future `Ble` impl drops in behind the same trait
-//! once the GATT UUIDs are identified (see PROTOCOL.md). Keep command *meaning*
-//! here and byte *framing* in [`crate::proto`].
+//! Used by the one-shot CLI probes (`--set-priority`, `--set-volume`): USB-HID
+//! ([`crate::usb::UsbHid`]) and BLE GATT (`ble::Ble`). The widget itself talks
+//! over the RFCOMM session (`rfcomm.rs`). Keep command *meaning* here and byte
+//! *framing* in [`crate::proto`].
 
-/// Boxed error so the trait stays independent of any one transport's error type
-/// (hidapi today, btleplug/windows-BLE later).
+/// Boxed error so the trait stays independent of any one transport's error type.
 pub type QResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// A connected Qudelix 5K that can receive runtime control commands.

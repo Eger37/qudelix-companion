@@ -4,13 +4,13 @@
 //!
 //! Raw Winsock `AF_BTH` socket. The GAIA channel is found via SDP (Serial Port
 //! UUID, record "GAIA") — it hops after every session, so never hard-code or
-//! probe channel numbers (see PROTOCOL.md). Frames are GAIA v1, e.g. priority
-//! `FF 01 00 01 F0 01 02 03 <v>`.
+//! probe channel numbers (see PROTOCOL.md). Frames are GAIA v1, built by
+//! [`crate::proto::rfcomm`].
 
 use windows::Win32::Devices::Bluetooth::{BTHPROTO_RFCOMM, SOCKADDR_BTH};
 use windows::Win32::Networking::WinSock::{
-    closesocket, connect, recv, send, setsockopt, shutdown, socket, SD_SEND, WSACleanup, WSAGetLastError, WSAStartup,
-    SEND_RECV_FLAGS, SOCKADDR, SOCKET_ERROR, SOCK_STREAM, SOL_SOCKET, SO_RCVTIMEO, WSADATA,
+    closesocket, connect, recv, send, setsockopt, shutdown, socket, SD_BOTH, SD_SEND, WSACleanup, WSAGetLastError,
+    WSAStartup, SEND_RECV_FLAGS, SOCKADDR, SOCKET_ERROR, SOCK_STREAM, SOL_SOCKET, SO_RCVTIMEO, WSADATA,
 };
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,22 +21,12 @@ use std::time::{Duration, Instant};
 use windows::Win32::Networking::WinSock::SOCKET;
 
 use crate::device::QResult;
+use crate::proto::rfcomm as frame;
 
 const AF_BTH: u16 = 32;
 
 /// Serial Port Profile UUID (0x1101) — the 5K advertises its GAIA endpoint under it.
 const SPP_UUID: windows::core::GUID = windows::core::GUID::from_u128(0x00001101_0000_1000_8000_00805f9b34fb);
-
-/// GAIA GetApiVersion (vendor 000A, cmd 0x0300) — the official app's first frame.
-const API_VERSION: &[u8] = &[0xFF, 0x01, 0x00, 0x00, 0x00, 0x0A, 0x03, 0x00];
-/// Qudelix ReqInitData (0x0100, data 00 00 04) — the app's second frame.
-const REQ_INIT_DATA: &[u8] = &[0xFF, 0x01, 0x00, 0x03, 0xF0, 0x01, 0x01, 0x00, 0x00, 0x00, 0x04];
-/// GAIA register-notification — opens the control session so commands are honored.
-const REGISTER: &[u8] = &[0xFF, 0x01, 0x00, 0x01, 0x00, 0x0A, 0x40, 0x01, 0x12];
-/// SetRuntimeStatusPeriod = 0 — stop status streaming (hygiene; never enable it).
-const STOP_STREAM: &[u8] = &[0xFF, 0x01, 0x00, 0x03, 0xF0, 0x01, 0x10, 0x06, 0x00, 0x00, 0x00];
-/// Register ACK marker: vendor 000A, cmd 0xC001.
-const REGISTER_ACK: &[u8] = &[0x00, 0x0A, 0xC0, 0x01];
 
 /// A **persistent** GAIA session held open like the official app's, with a
 /// reader thread that keeps draining what the 5K sends.
@@ -63,10 +53,6 @@ impl Session {
     /// The only way in: the channel hops after every session, and guessing or scanning
     /// channels left the 5K with a ghost session (see `worker::open_session`).
     pub fn open_sdp(bt_addr: u64, on_frame: FrameSink) -> QResult<Self> {
-        Self::open_at(bt_addr, 0, SPP_UUID, on_frame)
-    }
-
-    fn open_at(bt_addr: u64, channel: u32, service: windows::core::GUID, on_frame: FrameSink) -> QResult<Self> {
         unsafe {
             let mut wsa = WSADATA::default();
             if WSAStartup(0x0202, &mut wsa) != 0 {
@@ -79,11 +65,12 @@ impl Session {
                     return Err(format!("socket() failed: {e}").into());
                 }
             };
+            // port 0 + service UUID: Windows runs the SDP lookup and picks the channel.
             let sa = SOCKADDR_BTH {
                 addressFamily: AF_BTH,
                 btAddr: bt_addr,
-                serviceClassId: service,
-                port: channel,
+                serviceClassId: SPP_UUID,
+                port: 0,
             };
             if connect(
                 sock,
@@ -107,11 +94,10 @@ impl Session {
                 std::thread::spawn(move || read_loop(sock, &alive, &registered, &*on_frame))
             };
             let s = Session { sock, alive, reader: Some(reader) };
-            let label = if channel == 0 { "SDP/GAIA".to_string() } else { format!("ch{channel}") };
-            crate::log::line(&format!("[rfcomm] connected {label}, handshake…"));
+            crate::log::line("[rfcomm] connected SDP/GAIA, handshake…");
 
-            for f in [API_VERSION, REQ_INIT_DATA, REGISTER] {
-                s.write(f)?;
+            for f in [frame::api_version(), frame::req_init_data(), frame::register()] {
+                s.write(&f)?;
                 std::thread::sleep(Duration::from_millis(150));
             }
             let t = Instant::now();
@@ -124,7 +110,7 @@ impl Session {
             if !registered.load(Ordering::SeqCst) {
                 return Err("no register ACK from 5K".into());
             }
-            s.write(STOP_STREAM)?;
+            s.write(&frame::stop_stream())?;
             crate::log::line("[rfcomm] session open (registered)");
             Ok(s)
         }
@@ -148,7 +134,7 @@ impl Session {
 
     /// Ask the 5K to resend its full state (the same ReqInitData as the handshake).
     pub fn request_state(&self) -> QResult {
-        self.write(REQ_INIT_DATA)
+        self.write(&frame::req_init_data())
     }
 
     /// Send one GAIA command frame on the open session.
@@ -165,7 +151,7 @@ impl Drop for Session {
     fn drop(&mut self) {
         unsafe {
             if self.is_alive() {
-                let _ = send(self.sock, STOP_STREAM, SEND_RECV_FLAGS(0)); // leave device idle
+                let _ = send(self.sock, &frame::stop_stream(), SEND_RECV_FLAGS(0)); // leave device idle
             }
             // Graceful close: half-close, let the 5K finish (its recv sees EOF),
             // then release — rather than an abrupt close.
@@ -174,11 +160,15 @@ impl Drop for Session {
             while self.is_alive() && t.elapsed() < Duration::from_millis(1500) {
                 std::thread::sleep(Duration::from_millis(50));
             }
+            // Stop the reader before closing the handle: a closed SOCKET value can
+            // be reused at once, and the reader must never recv() on someone else's.
+            // shutdown wakes its recv(); the 1 s receive timeout bounds the rest.
             self.alive.store(false, Ordering::SeqCst);
-            let _ = closesocket(self.sock); // also unblocks the reader's recv()
+            let _ = shutdown(self.sock, SD_BOTH);
             if let Some(r) = self.reader.take() {
                 let _ = r.join();
             }
+            let _ = closesocket(self.sock);
             WSACleanup();
         }
     }
@@ -193,7 +183,7 @@ fn read_loop(sock: SOCKET, alive: &AtomicBool, registered: &AtomicBool, on_frame
         let r = unsafe { recv(sock, &mut buf, SEND_RECV_FLAGS(0)) };
         if r > 0 {
             for f in splitter.push(&buf[..r as usize]) {
-                if f.get(4..8) == Some(REGISTER_ACK) {
+                if f.get(4..8) == Some(&frame::REGISTER_ACK[..]) {
                     registered.store(true, Ordering::SeqCst);
                 }
                 // Warning (0xA002) code 3 = `newConnection` (official app enum): the 5K
@@ -222,31 +212,4 @@ fn read_loop(sock: SOCKET, alive: &AtomicBool, registered: &AtomicBool, on_frame
         }
     }
     alive.store(false, Ordering::SeqCst);
-}
-
-/// Diagnostics: try a bare connect to each RFCOMM channel and log the result,
-/// to see whether a lockout is specific to the GAIA channel or the whole link.
-pub fn probe_channels(bt_addr: u64, channels: std::ops::RangeInclusive<u32>) {
-    unsafe {
-        let mut wsa = WSADATA::default();
-        if WSAStartup(0x0202, &mut wsa) != 0 {
-            return;
-        }
-        for ch in channels {
-            let Ok(sock) = socket(AF_BTH as i32, SOCK_STREAM, BTHPROTO_RFCOMM as i32) else { continue };
-            let sa = SOCKADDR_BTH {
-                addressFamily: AF_BTH,
-                btAddr: bt_addr,
-                serviceClassId: windows::core::GUID::zeroed(),
-                port: ch,
-            };
-            let t = Instant::now();
-            let rc = connect(sock, &sa as *const _ as *const SOCKADDR, std::mem::size_of::<SOCKADDR_BTH>() as i32);
-            let res = if rc == SOCKET_ERROR { format!("WSA {}", WSAGetLastError().0) } else { "CONNECTED".into() };
-            crate::log::line(&format!("[probe] ch{ch}: {res} ({} ms)", t.elapsed().as_millis()));
-            let _ = closesocket(sock);
-            std::thread::sleep(Duration::from_millis(300));
-        }
-        WSACleanup();
-    }
 }

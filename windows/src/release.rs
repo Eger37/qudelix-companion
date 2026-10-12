@@ -38,18 +38,39 @@ pub fn signature_ok(pubkey: &[u8; 32], data: &[u8], sig: &[u8]) -> bool {
     pk.verify(data, &sig).is_ok()
 }
 
-/// "1.4.10" → (1, 4, 10); garbage → (0, 0, 0).
+/// "1.4.10" → (1, 4, 10); "1.5.3-rc1" → (1, 5, 3) (only the leading digits of
+/// each part count); garbage → (0, 0, 0). `releases/latest` never returns a
+/// pre-release, so a suffix doesn't need its own ordering.
 pub fn semver(v: &str) -> (u32, u32, u32) {
-    let mut it = v.split('.').map(|p| p.trim().parse::<u32>().unwrap_or(0));
+    let mut it = v.split('.').map(|p| {
+        let p = p.trim();
+        p[..p.find(|c: char| !c.is_ascii_digit()).unwrap_or(p.len())].parse::<u32>().unwrap_or(0)
+    });
     (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
 }
 
-/// Value of the first `"key": "value"` string field.
+/// Value of the first `"key": "value"` string field (`\"` and `\\` unescaped;
+/// other escapes are kept as written).
 pub fn json_str(json: &str, key: &str) -> Option<String> {
     let k = format!("\"{key}\"");
     let rest = &json[json.find(&k)? + k.len()..];
     let rest = &rest[rest.find('"')? + 1..];
-    Some(rest[..rest.find('"')?].to_string())
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                e @ ('"' | '\\') => out.push(e),
+                e => {
+                    out.push('\\');
+                    out.push(e);
+                }
+            },
+            c => out.push(c),
+        }
+    }
+    None
 }
 
 /// `browser_download_url` of the asset whose URL ends with `/<name>`.
@@ -83,12 +104,16 @@ mod tests {
             {"name":"qudelix-widget.apk","browser_download_url":"https://github.com/o/r/releases/download/v1.5.2/qudelix-widget.apk"},
             {"name":"qudelix-widget.exe","browser_download_url":"https://github.com/o/r/releases/download/v1.5.2/qudelix-widget.exe"}]}"#;
         assert_eq!(json_str(j, "tag_name").as_deref(), Some("v1.5.2"));
+        assert_eq!(json_str(r#"{"n": "a \"b\" \\ c"}"#, "n").as_deref(), Some(r#"a "b" \ c"#));
+        assert_eq!(json_str(r#"{"n": "cut"#, "n"), None);
         assert_eq!(
             asset_url(j, "qudelix-widget.exe").as_deref(),
             Some("https://github.com/o/r/releases/download/v1.5.2/qudelix-widget.exe")
         );
         assert!(semver("1.5.10") > semver("1.5.9"));
         assert!(semver("1.5.0") > semver("1.4.99"));
+        assert_eq!(semver("1.5.3-rc1"), (1, 5, 3));
+        assert_eq!(semver("x"), (0, 0, 0));
         assert_eq!(split_url("https://h.com/a/b"), Some(("h.com".into(), "/a/b".into())));
     }
 

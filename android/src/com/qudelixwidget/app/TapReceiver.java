@@ -3,7 +3,6 @@ package com.qudelixwidget.app;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.os.Build;
 
 /**
  * Receives the widget's button taps and hands them to {@link RfcommService}.
@@ -27,17 +26,7 @@ public class TapReceiver extends BroadcastReceiver {
             QudelixWidget.pushStatus(context, "open app → grant Bluetooth");
             return;
         }
-        Intent svc = new Intent(context, RfcommService.class)
-                .setAction(action)
-                .putExtra(RfcommService.EXTRA_VALUE, intent.getIntExtra(RfcommService.EXTRA_VALUE, 0));
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(svc);
-            } else {
-                context.startService(svc);
-            }
-        } catch (Exception e) {
-            Dbg.log(context, "startForegroundService failed: " + e);
+        if (!RfcommService.start(context, action, intent.getIntExtra(RfcommService.EXTRA_VALUE, 0))) {
             QudelixWidget.pushStatus(context, "start failed");
         }
     }

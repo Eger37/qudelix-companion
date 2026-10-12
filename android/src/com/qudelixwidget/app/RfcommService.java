@@ -2,7 +2,6 @@ package com.qudelixwidget.app;
 
 import android.annotation.SuppressLint;
 import android.app.Notification;
-import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.bluetooth.BluetoothAdapter;
@@ -332,12 +331,8 @@ public class RfcommService extends Service {
 
     /** Must happen promptly after startForegroundService(); false if the system refused. */
     private boolean goForeground() {
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm != null && nm.getNotificationChannel(CHANNEL_ID) == null) {
-            NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "Qudelix", NotificationManager.IMPORTANCE_LOW);
-            ch.setShowBadge(false);
-            nm.createNotificationChannel(ch);
-        }
+        App.ensureChannel((NotificationManager) getSystemService(NOTIFICATION_SERVICE),
+                CHANNEL_ID, "Qudelix", NotificationManager.IMPORTANCE_LOW, false);
         Notification n = new Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("Qudelix 5K")
                 .setContentText("Sending…")
@@ -362,6 +357,17 @@ public class RfcommService extends Service {
     static boolean hasBtPermission(Context c) {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.S
                 || c.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** Send this service one command; false (logged) if Android refused the start. Check hasBtPermission first. */
+    static boolean start(Context c, String action, int value) {
+        try {
+            c.startForegroundService(new Intent(c, RfcommService.class).setAction(action).putExtra(EXTRA_VALUE, value));
+            return true;
+        } catch (Exception e) {
+            Dbg.log(c, "service start (" + action + ") failed: " + e);
+            return false;
+        }
     }
 
     private BluetoothAdapter adapter() {
