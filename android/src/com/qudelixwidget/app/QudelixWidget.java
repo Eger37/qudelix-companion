@@ -9,8 +9,6 @@ import android.content.Intent;
 import android.os.Build;
 import android.widget.RemoteViews;
 
-import java.util.Locale;
-
 /** Home-screen widget: priority buttons, volume -/+, refresh, and what is playing. Clicks drive {@link RfcommService}. */
 public class QudelixWidget extends AppWidgetProvider {
 
@@ -42,10 +40,9 @@ public class QudelixWidget extends AppWidgetProvider {
         AppWidgetManager mgr = AppWidgetManager.getInstance(context);
         ComponentName cn = new ComponentName(context, QudelixWidget.class);
         int[] ids = mgr.getAppWidgetIds(cn);
-        if (ids == null) return;
-        for (int id : ids) {
-            mgr.updateAppWidget(id, buildViews(context));
-        }
+        if (ids == null || ids.length == 0) return;
+        // The views don't depend on the widget id: build once for all instances.
+        mgr.updateAppWidget(ids, buildViews(context));
     }
 
     private static RemoteViews buildViews(Context context) {
@@ -90,7 +87,7 @@ public class QudelixWidget extends AppWidgetProvider {
         }
 
         v.setTextViewText(R.id.vol, Prefs.hasVolume(context)
-                ? String.format(Locale.US, "%+.1f dB", Prefs.getVolumeN(context) / 60.0) : "— dB");
+                ? Proto.db(Prefs.getVolumeN(context)) : "— dB");
         // Volume bar: 12 segments of 5 dB; filled up to the current level, tap = jump there.
         int volN = Prefs.getVolumeN(context);
         boolean known = Prefs.hasVolume(context);

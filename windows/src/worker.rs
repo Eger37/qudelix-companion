@@ -9,10 +9,9 @@
 //! `--raw`) are the early transports; kept for diagnostics (USB-HID still works
 //! when the 5K is on a USB data cable).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 
 use crate::device::Qudelix;
 use crate::proto;
@@ -33,24 +32,44 @@ enum Cmd {
 }
 
 /// Handle the UI keeps; sending never blocks.
-#[allow(dead_code)] // wired into the UI after the one-shot probe validates the idea
 pub struct Worker {
-    tx: Sender<Cmd>,
+    /// None only while dropping (closing the channel stops the thread).
+    tx: Option<Sender<Cmd>>,
     status: Arc<Mutex<String>>,
-    connected: Arc<AtomicBool>,
     dev: Arc<Mutex<crate::state::DevState>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+/// On exit, wait this long for the thread to close the session cleanly
+/// (stop stream, half-close: ~1.5 s at most) before the process ends anyway.
+const JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        drop(self.tx.take()); // the thread sees Disconnected and drops its session
+        if let Some(t) = self.thread.take() {
+            let start = std::time::Instant::now();
+            while !t.is_finished() && start.elapsed() < JOIN_TIMEOUT {
+                thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if t.is_finished() {
+                let _ = t.join();
+            } else {
+                crate::log::line("[worker] still busy at exit — not waiting");
+            }
+        }
+    }
 }
 
 impl Worker {
     pub fn start() -> Self {
         let (tx, rx) = mpsc::channel::<Cmd>();
         let status = Arc::new(Mutex::new("Ready".to_string()));
-        let connected = Arc::new(AtomicBool::new(true)); // stateless; buttons always usable
 
         let dev = Arc::new(Mutex::new(crate::state::DevState::default()));
         let st = status.clone();
         let dv = dev.clone();
-        thread::spawn(move || {
+        let thread = thread::spawn(move || {
             let set_status = |s: &str| {
                 if let Ok(mut g) = st.lock() {
                     *g = s.to_string();
@@ -81,7 +100,12 @@ impl Worker {
                             }
                             continue;
                         }
-                        Err(RecvTimeoutError::Disconnected) => break,
+                        Err(RecvTimeoutError::Disconnected) => {
+                            if session.take().is_some() {
+                                crate::log::line("[worker] exit — released the 5K");
+                            }
+                            break;
+                        }
                     };
                     // Rapid clicks queue up; only the latest of each kind matters.
                     // Sending stale steps just keeps the 5K busy (and it lags).
@@ -112,15 +136,21 @@ impl Worker {
             while rx.recv().is_ok() {}
         });
 
-        Worker { tx, status, connected, dev }
+        Worker { tx: Some(tx), status, dev, thread: Some(thread) }
+    }
+
+    fn send(&self, c: Cmd) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(c);
+        }
     }
 
     pub fn priority(&self, v: u8) {
-        let _ = self.tx.send(Cmd::Priority(v));
+        self.send(Cmd::Priority(v));
     }
 
     pub fn volume(&self, n: i16) {
-        let _ = self.tx.send(Cmd::Volume(n));
+        self.send(Cmd::Volume(n));
     }
 
     /// Show a note on the status line (e.g. from the update checker thread).
@@ -129,17 +159,12 @@ impl Worker {
     }
 
     pub fn refresh(&self) {
-        let _ = self.tx.send(Cmd::Refresh);
+        self.send(Cmd::Refresh);
     }
 
     /// Latest state read back from the 5K (empty fields = not known yet).
     pub fn dev_state(&self) -> crate::state::DevState {
         self.dev.lock().map(|g| g.clone()).unwrap_or_default()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::SeqCst)
     }
 
     pub fn status(&self) -> String {
@@ -267,11 +292,10 @@ pub fn cycle_test(rounds: u32) {
     let Ok(addr) = crate::ble::find_qudelix_address() else { return };
     let sink: crate::rfcomm::FrameSink = Arc::new(|_: &[u8]| {});
     // SDP only — scanning channels is what left the 5K with a ghost session.
-    let try_open = || -> Option<(u32, crate::rfcomm::Session)> {
+    let try_open = || -> Option<crate::rfcomm::Session> {
         crate::rfcomm::Session::open_sdp(addr, sink.clone())
             .map_err(|e| crate::log::line(&format!("[cycle] sdp open: {e}")))
             .ok()
-            .map(|s| (0, s))
     };
     for round in 1..=rounds {
         let t = std::time::Instant::now();
@@ -284,8 +308,8 @@ pub fn cycle_test(rounds: u32) {
             std::thread::sleep(std::time::Duration::from_secs(2));
         }
         match found {
-            Some((ch, s)) => {
-                crate::log::line(&format!("[cycle] round {round}: session on ch{ch} after {} ms", t.elapsed().as_millis()));
+            Some(s) => {
+                crate::log::line(&format!("[cycle] round {round}: session after {} ms", t.elapsed().as_millis()));
                 std::thread::sleep(std::time::Duration::from_millis(1500));
                 drop(s);
                 crate::log::line(&format!("[cycle] round {round}: closed"));
@@ -349,12 +373,8 @@ pub fn collision_test(rounds: u32) {
 #[cfg(feature = "ble")]
 fn command_frame(cmd: &Cmd) -> Vec<u8> {
     match *cmd {
-        Cmd::Priority(v) => vec![0xFF, 0x01, 0x00, 0x01, 0xF0, 0x01, 0x02, 0x03, v & 0x03],
-        Cmd::Volume(n) => {
-            let hi = ((n >> 8) & 0xFF) as u8;
-            let lo = (n & 0xFF) as u8;
-            vec![0xFF, 0x01, 0x00, 0x03, 0xF0, 0x01, 0x02, 0x00, 0x01, hi, lo]
-        }
+        Cmd::Priority(v) => proto::rfcomm::priority(v),
+        Cmd::Volume(n) => proto::rfcomm::volume(n),
         Cmd::Refresh => unreachable!("Refresh is handled by refresh_state"),
     }
 }
@@ -490,38 +510,50 @@ fn run_session(cmd_frames: Vec<Vec<u8>>) -> Result<(), String> {
 #[cfg(feature = "ble")]
 pub fn set_priority_via_rfcomm(v: u8) -> Result<(), String> {
     crate::log::line(&format!("[priority] SetAudioTopSource={v}"));
-    let r = run_session(vec![vec![0xFF, 0x01, 0x00, 0x01, 0xF0, 0x01, 0x02, 0x03, v & 0x03]]);
+    let r = run_session(vec![proto::rfcomm::priority(v)]);
     crate::log::line(&format!("[priority] -> {r:?}"));
     r
 }
 
-/// Tentative: set volume via the same session (SetVolume=0x0200, [sink, nHi, nLo]).
-/// n is signed dB*60. Not yet hardware-confirmed.
+/// Set the main volume via the same session (SetVolume=0x0200, [sink, nHi, nLo]).
+/// n is signed dB*60.
 #[cfg(feature = "ble")]
 pub fn set_volume_via_rfcomm(n: i16) -> Result<(), String> {
-    let hi = ((n >> 8) & 0xFF) as u8;
-    let lo = (n & 0xFF) as u8;
     crate::log::line(&format!("[volume] SetVolume n={n}"));
-    run_session(vec![vec![0xFF, 0x01, 0x00, 0x03, 0xF0, 0x01, 0x02, 0x00, 0x01, hi, lo]])
+    let r = run_session(vec![proto::rfcomm::volume(n)]);
+    crate::log::line(&format!("[volume] -> {r:?}"));
+    r
 }
 
-/// Cross-process mutex: only one process at a time talks RFCOMM to the 5K.
+/// Cross-process mutex around the connect + handshake: two processes paging the
+/// 5K at the same moment is what confuses it. (The session itself isn't covered:
+/// the 5K refuses a second controller cleanly once one is registered.)
 #[cfg(feature = "ble")]
-struct RfcommLock(Option<windows::Win32::Foundation::HANDLE>);
+struct RfcommLock {
+    handle: Option<windows::Win32::Foundation::HANDLE>,
+    /// Release only what we own: after a timeout we go ahead without the lock.
+    owned: bool,
+}
 
 #[cfg(feature = "ble")]
 impl RfcommLock {
     fn acquire() -> Self {
         use windows::core::w;
+        use windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
         use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
         unsafe {
             match CreateMutexW(None, false, w!("Local\\QudelixRfcommLock")) {
                 Ok(h) => {
                     // 20 s cap: a wedged holder must not block us forever.
-                    let _ = WaitForSingleObject(h, 20_000);
-                    RfcommLock(Some(h))
+                    let r = WaitForSingleObject(h, 20_000);
+                    // Abandoned = the holder died; the mutex is ours now.
+                    let owned = r == WAIT_OBJECT_0 || r == WAIT_ABANDONED;
+                    if !owned {
+                        crate::log::line("[rfcomm] connect lock busy for 20 s — going ahead without it");
+                    }
+                    RfcommLock { handle: Some(h), owned }
                 }
-                Err(_) => RfcommLock(None),
+                Err(_) => RfcommLock { handle: None, owned: false },
             }
         }
     }
@@ -532,9 +564,11 @@ impl Drop for RfcommLock {
     fn drop(&mut self) {
         use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::System::Threading::ReleaseMutex;
-        if let Some(h) = self.0 {
+        if let Some(h) = self.handle {
             unsafe {
-                let _ = ReleaseMutex(h);
+                if self.owned {
+                    let _ = ReleaseMutex(h);
+                }
                 let _ = CloseHandle(h);
             }
         }

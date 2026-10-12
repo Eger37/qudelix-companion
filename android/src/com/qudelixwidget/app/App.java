@@ -1,6 +1,8 @@
 package com.qudelixwidget.app;
 
 import android.app.Application;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 
 import java.io.File;
 import java.io.PrintWriter;
@@ -58,10 +60,14 @@ public class App extends Application {
             f.delete();
             return null;
         }
-        try {
-            byte[] b = new byte[(int) f.length()];
-            try (java.io.FileInputStream in = new java.io.FileInputStream(f)) { in.read(b); }
-            return new String(b);
-        } catch (Exception e) { return null; }
+        return Dbg.readText(f);
+    }
+
+    /** Create a notification channel once (an existing one keeps the user's settings). */
+    static void ensureChannel(NotificationManager nm, String id, String name, int importance, boolean badge) {
+        if (nm == null || nm.getNotificationChannel(id) != null) return;
+        NotificationChannel ch = new NotificationChannel(id, name, importance);
+        ch.setShowBadge(badge);
+        nm.createNotificationChannel(ch);
     }
 }

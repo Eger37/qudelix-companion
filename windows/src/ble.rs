@@ -9,8 +9,9 @@
 //! the GAIA service, subscribe to the notify characteristic, send `ReqInitData`,
 //! then write commands to the write characteristic (WriteWithoutResponse).
 //!
-//! Response parsing (RspDevConfig/RspDevStatus → live volume/priority) is left as
-//! a TODO seam; today this is write-only, which is all the widget needs.
+//! Write-only: the `--raw` / `--set-*` probes only. While the 5K is connected as
+//! an audio device it ignores GATT; the widget uses RFCOMM (`rfcomm.rs`). This
+//! module also finds the 5K's Bluetooth address and lists paired devices.
 
 use windows::core::{Interface, GUID};
 use windows::Devices::Bluetooth::GenericAttributeProfile::{

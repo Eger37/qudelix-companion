@@ -40,8 +40,16 @@ One-tap control of your **Qudelix 5K** without opening the app: a **Windows desk
   The widgets let go of the 5K ~3 s after your last tap.
 - It uses the **same commands the official app sends**. The 5K's firmware is never touched.
 - Volume safety: one tap/command raises the volume by at most **10 dB**.
-- Found a bug or have an idea? Open an [issue](https://github.com/Eger37/qudelix-companion/issues).
-  This is a hobby project, provided as is.
+
+### Feature requests & bugs
+
+**Missing something? Ask for it.** Want another control on the widget (EQ preset, gain, a
+different layout…), Linux / macOS / iOS support, or anything else — open an
+**[issue](https://github.com/Eger37/qudelix-companion/issues/new)** and describe what you'd like.
+Requests are welcome and do get read.
+
+For a bug, please add your Windows / Android version, the widget version (shown in its ⚙ menu or
+settings screen) and what you tapped. This is a hobby project, provided as is.
 
 **Unofficial.** Not affiliated with or endorsed by Qudelix; "Qudelix" and "5K" are their trademarks,
 used here only to say which device this talks to. MIT licensed (see `LICENSE`).
@@ -121,12 +129,13 @@ Windows — no admin rights (not Program Files: that needs UAC and would break s
   ⚙ / right-click: theme (system / Windows colours / light red & grey / dark red & black / custom
   background + accent via the Windows colour picker), **device** (auto = first paired "Qudelix-5K…",
   or pick any paired device by name), volume step, **Start with Windows** (per-user `Run` key, on by
-  default after the first start), automatic updates. Settings: `%APPDATA%\qudelix-widget\widget.ini`.
+  default for the installed copy), automatic updates. Settings: `%APPDATA%\qudelix-widget\widget.ini`.
 - CLI (hands the command to the running widget if there is one):
   `--priority 0|1|2`, `--volume <n>` (n = dB×60, signed), `--refresh`.
   Diagnostics: `--rfcomm "<hex>;<hex>"` (raw frames), `--cycle-test N`, `--collision-test N`,
-  `--probe-channels` (⚠ bare connects — only with nothing else connected), `--set-priority`/`--set-volume` (USB-HID).
-- Log: `%APPDATA%\qudelix-widget\qudelix.log` (UTC times; panics are logged too).
+  `--set-priority`/`--set-volume` (USB-HID). Everything connects via SDP only — no channel scans.
+- Log: `%APPDATA%\qudelix-widget\qudelix.log` (UTC date + time; panics are logged too; moves to
+  `qudelix.log.1` at 2 MB).
 - **Phone debug over Tailscale** (⚙, opt-in; on by default only where an `updates` folder already
   exists): the phone's update + log server on `127.0.0.1:8788`, exposed to the tailnet only as
   `:8787` by `tailscale serve` (no admin). Serves only `version.json` + the APK from

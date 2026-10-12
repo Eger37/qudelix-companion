@@ -2,15 +2,15 @@
 name = "qudelix-widget"
 version = "0.1.0"
 edition = "2021"
-description = "Desktop gadget to control a Qudelix 5K DAC/amp over USB-HID (and BLE)"
+description = "Desktop gadget to control a Qudelix 5K DAC/amp over Bluetooth (RFCOMM/GAIA)"
 license = "MIT"
 publish = false
 
 [features]
-default = []
-# Optional BLE (Qualcomm GAIA over WinRT GATT) transport. Off by default; USB-HID
-# is the primary path for the Windows widget. Enabling it pulls the WinRT
-# Bluetooth features of the `windows` crate and compiles `src/ble.rs`.
+default = ["ble"]
+# Bluetooth: the RFCOMM/GAIA session (the real control path), the paired-device
+# lookup and the old BLE GATT probe. On by default; the name is historical.
+# Pulls the WinRT Bluetooth features of the `windows` crate and compiles `src/ble.rs`.
 ble = [
     "windows/Foundation",
     "windows/Foundation_Collections",

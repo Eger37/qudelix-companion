@@ -64,7 +64,7 @@ pub fn set_for(exe: &std::path::Path, enable: bool) {
     unsafe {
         if enable {
             let cmd = quoted(exe);
-            let wide: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();
+            let wide = crate::win::wide(&cmd);
             let r = RegSetKeyValueW(
                 HKEY_CURRENT_USER,
                 RUN_KEY,

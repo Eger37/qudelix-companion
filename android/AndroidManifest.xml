@@ -2,13 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.qudelixwidget.app">
 
+    <!-- Silent self-update (USER_ACTION_NOT_REQUIRED) needs a recent target SDK: bump it
+         about yearly (here and in build_apk.sh), else updates fall back to a confirm prompt. -->
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
 
     <!-- Android 12+ Bluetooth permission (classic RFCOMM to the paired 5K) -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <!-- Legacy (<= Android 11) -->
+    <!-- Legacy (<= Android 11). No BLUETOOTH_ADMIN: the app never runs discovery. -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
 
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
 
@@ -28,7 +29,7 @@
         android:name=".App"
         android:label="Qudelix Widget"
         android:icon="@drawable/ic_widget"
-        android:usesCleartextTraffic="true">
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
             android:name=".MainActivity"

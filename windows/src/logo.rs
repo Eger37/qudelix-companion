@@ -4,9 +4,9 @@
 //! the .exe files themselves. `tools/make_icon.py` exports the icon as two
 //! layers per size (`logo-layers.bin`): the rounded square's coverage and the
 //! device on a transparent background. Here they are composited over the chosen
-//! colour and written into the icon resources of the Desktop copies:
-//! a running .exe can be renamed but not rewritten, so it is patched as a copy
-//! and swapped in (exe → exe.old, the same trick as `self_update`).
+//! colour and written into the icon resources of this exe: a running .exe can
+//! be renamed but not rewritten, so it is patched as a copy and swapped in
+//! (`self_update::move_aside`, the same swap as an update).
 
 use std::path::{Path, PathBuf};
 
@@ -20,6 +20,17 @@ use crate::config;
 /// Must match ICO_SIZES in tools/make_icon.py (and the order windres numbered them).
 const SIZES: [usize; 8] = [16, 20, 24, 32, 40, 48, 64, 256];
 static LAYERS: &[u8] = include_bytes!("../logo-layers.bin");
+/// 5 bytes per pixel and size (1 coverage + 4 RGBA). A stale logo-layers.bin
+/// fails the build instead of panicking (= aborting) in `images` at run time.
+const _: () = {
+    let mut n = 0;
+    let mut i = 0;
+    while i < SIZES.len() {
+        n += 5 * SIZES[i] * SIZES[i];
+        i += 1;
+    }
+    assert!(include_bytes!("../logo-layers.bin").len() == n, "logo-layers.bin doesn't match SIZES");
+};
 /// build.rs embeds icon.ico as group 101; windres numbers its images 1…N.
 const GROUP_ID: u16 = 101;
 const RT_ICON: u16 = 3;

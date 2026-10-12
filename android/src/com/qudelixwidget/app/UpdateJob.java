@@ -22,17 +22,25 @@ public class UpdateJob extends JobService {
                 .build());
     }
 
+    private Thread worker;
+    /** Set by onStopJob: the system already dropped the job, so the worker must not finish it. */
+    private volatile boolean stopped;
+
     @Override
     public boolean onStartJob(JobParameters params) {
-        new Thread(() -> {
+        stopped = false;
+        worker = new Thread(() -> {
             Updater.checkAndInstall(this, false);
-            jobFinished(params, false);
-        }, "qudelix-update").start();
+            if (!stopped) jobFinished(params, false);
+        }, "qudelix-update");
+        worker.start();
         return true;
     }
 
     @Override
     public boolean onStopJob(JobParameters params) {
+        stopped = true;
+        if (worker != null) worker.interrupt();
         return true; // retry later
     }
 }

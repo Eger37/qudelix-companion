@@ -1,12 +1,17 @@
 //! Qudelix 5K desktop gadget — a small Windows widget that controls the user's
-//! own Qudelix 5K DAC/amp over USB-HID.
+//! own Qudelix 5K DAC/amp over Bluetooth (a GAIA session on RFCOMM, the same
+//! commands the official app sends). USB-HID / BLE GATT remain as CLI probes.
 //!
-//! The protocol core (`proto`) is platform-independent and host-testable; the
-//! Windows window + HID transport are compiled only for the Windows target.
+//! The protocol core (`proto`, `state`, `release`, `log`) is platform-independent
+//! and host-testable; the window and the transports compile only for Windows.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+// The host build only runs the tests: most of the shared core is unused there.
+#![cfg_attr(not(windows), allow(dead_code))]
 
+mod log;
 mod proto;
 mod release;
+mod win;
 
 /// Semantic version shared with the Android widget (repo-root `VERSION`).
 #[allow(dead_code)]
@@ -21,8 +26,6 @@ mod ble;
 mod config;
 #[cfg(windows)]
 mod device;
-#[cfg(windows)]
-mod log;
 #[cfg(windows)]
 mod logo;
 #[cfg(windows)]
@@ -100,15 +103,6 @@ fn main() {
         worker::cycle_test(n);
         return;
     }
-    // Diagnostics: bare connect to RFCOMM channels 1..12, results in the log.
-    #[cfg(feature = "ble")]
-    if args.iter().any(|a| a == "--probe-channels") {
-        worker::init_com();
-        if let Ok(addr) = ble::find_qudelix_address() {
-            rfcomm::probe_channels(addr, 1..=12);
-        }
-        return;
-    }
     // The real, confirmed priority switch (full GAIA session over RFCOMM).
     #[cfg(feature = "ble")]
     if let Some(i) = args.iter().position(|a| a == "--priority") {
@@ -154,6 +148,11 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok());
     self_update::finish_update(wait_pid);
+    // Uninstall's helper copy in %TEMP%: the widget has exited, delete its folder.
+    if args.iter().any(|a| a == "--remove-install") {
+        installer::remove_install();
+        return;
+    }
     if args.iter().any(|a| a == "--install") {
         let r = installer::install_silent();
         log::line(&format!("[install] --install: {r:?}"));

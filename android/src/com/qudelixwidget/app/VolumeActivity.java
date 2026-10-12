@@ -7,6 +7,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -14,8 +15,6 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
-
-import java.util.Locale;
 
 /**
  * Small volume popup over the home screen (opened by tapping the dB readout on
@@ -27,6 +26,8 @@ public class VolumeActivity extends Activity {
 
     private static final long REPEAT_DELAY_MS = 380;
     private static final long REPEAT_EVERY_MS = 90;
+    /** Slider drags fire many changes: start the service at most this often. */
+    private static final long SEND_EVERY_MS = 60;
     /** Slider resolution: 0.5 dB (the official app's step), range -60..0 dB. */
     private static final int HALF_DB_N = 30;
 
@@ -122,7 +123,7 @@ public class VolumeActivity extends Activity {
         volumeN = Prefs.getVolumeN(this);
         showVolume();
         // Pull the real current volume from the 5K.
-        startService(RfcommService.ACTION_REFRESH, 0);
+        RfcommService.start(this, RfcommService.ACTION_REFRESH, 0);
     }
 
     @Override
@@ -135,6 +136,7 @@ public class VolumeActivity extends Activity {
     protected void onPause() {
         getSharedPreferences("qudelix", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(prefsListener);
         stopRepeat();
+        flushSend();
         super.onPause();
     }
 
@@ -196,21 +198,37 @@ public class VolumeActivity extends Activity {
     // ── plumbing ─────────────────────────────────────────────────────────────────
 
     private void showVolume() {
-        level.setText(String.format(Locale.US, "%+.1f dB", volumeN / 60.0));
+        level.setText(Proto.db(volumeN));
         bar.setProgress((volumeN - Proto.VOL_MIN_N) / HALF_DB_N);
     }
 
+    private long lastSendAt;
+    private boolean sendPending;
+    private final Runnable sendLatest = this::sendNow;
+
+    /** Throttled: at most one service start per SEND_EVERY_MS; the latest value is always sent last. */
     private void send() {
-        startService(RfcommService.ACTION_VOLUME_SET, volumeN);
+        long wait = lastSendAt + SEND_EVERY_MS - SystemClock.uptimeMillis();
+        ui.removeCallbacks(sendLatest);
+        if (wait <= 0) {
+            sendNow();
+        } else {
+            sendPending = true;
+            ui.postDelayed(sendLatest, wait);
+        }
     }
 
-    private void startService(String action, int value) {
-        Intent i = new Intent(this, RfcommService.class).setAction(action).putExtra(RfcommService.EXTRA_VALUE, value);
-        try {
-            startForegroundService(i);
-        } catch (Exception e) {
-            Dbg.log(this, "volume popup: service start failed: " + e);
-        }
+    private void sendNow() {
+        sendPending = false;
+        lastSendAt = SystemClock.uptimeMillis();
+        RfcommService.start(this, RfcommService.ACTION_VOLUME_SET, volumeN);
+    }
+
+    /** Send a throttled value right away (the popup is closing). */
+    private void flushSend() {
+        if (!sendPending) return;
+        ui.removeCallbacks(sendLatest);
+        sendNow();
     }
 
     private void tint(SeekBar s) {

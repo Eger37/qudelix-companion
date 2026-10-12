@@ -30,6 +30,7 @@ echo "[1/6] aapt2 compile resources"
 "$AAPT2" compile --dir res -o "$OUT/res.zip"
 
 echo "[2/6] aapt2 link"
+# targetSdkVersion: bump about yearly for silent self-update (see AndroidManifest.xml).
 "$AAPT2" link -o "$OUT/base.apk" \
   -I "$JAR" \
   --manifest AndroidManifest.xml \

@@ -160,9 +160,83 @@ pub fn gaia_volume_frame(target: u8, n: i16) -> Vec<u8> {
     gaia_frame(opcode::SET_VOLUME, &[target, n[0], n[1]])
 }
 
+// ── RFCOMM / GAIA v1 framing (the real control path) ───────────────────────────
+
+/// GAIA vendor id of the standard GAIA commands (API version, notifications).
+pub const VENDOR_GAIA: u16 = 0x000A;
+/// GAIA vendor id of Qudelix's own commands over RFCOMM.
+pub const VENDOR_QUDELIX: u16 = 0xF001;
+
+/// One GAIA v1 frame as sent over RFCOMM: `FF 01 00 <len> <vendor> <cmd> <data>`
+/// (SOF, version, flags = 0, data length, then big-endian vendor and command).
+pub fn gaia_v1(vendor: u16, cmd: u16, data: &[u8]) -> Vec<u8> {
+    assert!(data.len() <= 0xFF, "GAIA v1 data is at most 255 bytes");
+    let mut v = Vec::with_capacity(8 + data.len());
+    v.extend_from_slice(&[0xFF, 0x01, 0x00, data.len() as u8]);
+    v.extend_from_slice(&vendor.to_be_bytes());
+    v.extend_from_slice(&cmd.to_be_bytes());
+    v.extend_from_slice(data);
+    v
+}
+
+/// Frames of the RFCOMM session (handshake and commands). PROTOCOL.md has the
+/// captures they come from.
+pub mod rfcomm {
+    use super::{gaia_v1, opcode, VENDOR_GAIA, VENDOR_QUDELIX, VOLUME_SINK_MAIN};
+
+    /// GetApiVersion (0x0300) — the official app's first frame.
+    pub fn api_version() -> Vec<u8> {
+        gaia_v1(VENDOR_GAIA, 0x0300, &[])
+    }
+
+    /// ReqInitData (data 00 00 04): the 5K answers with its full state.
+    pub fn req_init_data() -> Vec<u8> {
+        gaia_v1(VENDOR_QUDELIX, opcode::REQ_INIT_DATA, &[0x00, 0x00, 0x04])
+    }
+
+    /// Register for notifications (0x4001, event 0x12) — opens the control
+    /// session, so the 5K honours commands.
+    pub fn register() -> Vec<u8> {
+        gaia_v1(VENDOR_GAIA, 0x4001, &[0x12])
+    }
+
+    /// SetRuntimeStatusPeriod = 0: stop status streaming (never enable it).
+    pub fn stop_stream() -> Vec<u8> {
+        gaia_v1(VENDOR_QUDELIX, opcode::SET_RUNTIME_STATUS_PERIOD, &[0x00, 0x00, 0x00])
+    }
+
+    /// Bytes 4..8 of the register ACK (vendor 000A, cmd 0xC001).
+    pub const REGISTER_ACK: [u8; 4] = [0x00, 0x0A, 0xC0, 0x01];
+
+    /// Source priority: 0 USB, 1 A2DP#1, 2 A2DP#2.
+    pub fn priority(v: u8) -> Vec<u8> {
+        gaia_v1(VENDOR_QUDELIX, opcode::SET_AUDIO_IN_TOP_PRIORITY, &[v & 0x03])
+    }
+
+    /// Absolute main volume, n = dB × 60 (signed, big-endian).
+    pub fn volume(n: i16) -> Vec<u8> {
+        let n = n.to_be_bytes();
+        gaia_v1(VENDOR_QUDELIX, opcode::SET_VOLUME, &[VOLUME_SINK_MAIN, n[0], n[1]])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The exact bytes captured from the official app / confirmed on the 5K.
+    #[test]
+    fn rfcomm_frames_match_captures() {
+        assert_eq!(rfcomm::api_version(), [0xFF, 0x01, 0x00, 0x00, 0x00, 0x0A, 0x03, 0x00]);
+        assert_eq!(rfcomm::req_init_data(), [0xFF, 0x01, 0x00, 0x03, 0xF0, 0x01, 0x01, 0x00, 0x00, 0x00, 0x04]);
+        assert_eq!(rfcomm::register(), [0xFF, 0x01, 0x00, 0x01, 0x00, 0x0A, 0x40, 0x01, 0x12]);
+        assert_eq!(rfcomm::stop_stream(), [0xFF, 0x01, 0x00, 0x03, 0xF0, 0x01, 0x10, 0x06, 0x00, 0x00, 0x00]);
+        assert_eq!(rfcomm::priority(2), [0xFF, 0x01, 0x00, 0x01, 0xF0, 0x01, 0x02, 0x03, 0x02]);
+        assert_eq!(rfcomm::priority(7), [0xFF, 0x01, 0x00, 0x01, 0xF0, 0x01, 0x02, 0x03, 0x03]);
+        // -40 dB = -2400 = 0xF6A0
+        assert_eq!(rfcomm::volume(-2400), [0xFF, 0x01, 0x00, 0x03, 0xF0, 0x01, 0x02, 0x00, 0x01, 0xF6, 0xA0]);
+        assert_eq!(rfcomm::volume(0)[8..], [0x01, 0x00, 0x00]);
+    }
 
     #[test]
     fn opcode_math_priority() {

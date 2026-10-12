@@ -103,6 +103,7 @@ public final class Updater {
             try (OutputStream out = new FileOutputStream(apk)) {
                 out.write(get(c, best.url));
             }
+            setWaiting(c, false); // before install: its InstallReceiver result may set it again
             install(c, apk);
             p.edit().putLong("pendingCode", best.code).putLong("pendingAt", System.currentTimeMillis()).apply();
             return "installing v" + best.name + "…";
@@ -110,6 +111,17 @@ public final class Updater {
             Dbg.log(c, "update: download/install failed: " + e);
             return "update failed: " + e.getMessage();
         }
+    }
+
+    /** InstallReceiver: the install needs the user's tap, but no notification could ask for it. */
+    static void setWaiting(Context c, boolean on) {
+        c.getSharedPreferences("qudelix", Context.MODE_PRIVATE).edit().putBoolean("updateWaiting", on).apply();
+    }
+
+    /** A downloaded update still waits for the user's confirmation (and it isn't installed yet). */
+    static boolean waiting(Context c) {
+        android.content.SharedPreferences p = c.getSharedPreferences("qudelix", Context.MODE_PRIVATE);
+        return p.getBoolean("updateWaiting", false) && p.getLong("pendingCode", 0) > installedVersion(c);
     }
 
     /** Latest GitHub release, or null if it has no APK. Tag "vX.Y.Z" → versionCode. */

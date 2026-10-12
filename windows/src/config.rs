@@ -14,12 +14,7 @@ pub struct Pos {
 }
 
 fn config_path() -> PathBuf {
-    let dir = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("qudelix-widget");
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join("widget.ini")
+    crate::win::app_dir().join("widget.ini")
 }
 
 fn read_map() -> std::collections::BTreeMap<String, String> {

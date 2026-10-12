@@ -1,7 +1,6 @@
 package com.qudelixwidget.app;
 
 import android.app.Notification;
-import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
@@ -31,11 +30,14 @@ public class InstallReceiver extends BroadcastReceiver {
             Dbg.log(c, "update: confirm activity blocked: " + e);
         }
         NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm == null) return;
-        if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-            nm.createNotificationChannel(new NotificationChannel(
-                    CHANNEL_ID, "Updates", NotificationManager.IMPORTANCE_DEFAULT));
+        if (nm == null || !nm.areNotificationsEnabled()) {
+            // POST_NOTIFICATIONS not granted (Android 13+) or notifications off:
+            // the settings screen shows that an update waits instead.
+            Dbg.log(c, "update: notifications off — confirm waits for the settings screen");
+            Updater.setWaiting(c, true);
+            return;
         }
+        App.ensureChannel(nm, CHANNEL_ID, "Updates", NotificationManager.IMPORTANCE_DEFAULT, true);
         PendingIntent pi = PendingIntent.getActivity(c, 0, confirm,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         nm.notify(2, new Notification.Builder(c, CHANNEL_ID)

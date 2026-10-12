@@ -128,7 +128,8 @@ pub fn finish_update(wait_pid: Option<u32>) {
                 let _ = CloseHandle(h);
             }
         }
-        crate::log::line(&format!("[self-update] now running v{}", crate::VERSION.trim()));
+        // After a self-update, an install or an uninstall's cleanup copy.
+        crate::log::line(&format!("[start] pid {pid} has exited; v{} takes over", crate::VERSION.trim()));
     }
     if let Ok(exe) = std::env::current_exe() {
         remove_old_copies(&exe);
@@ -138,8 +139,7 @@ pub fn finish_update(wait_pid: Option<u32>) {
 /// HTTPS GET (WinHTTP follows GitHub's redirects to its CDN). Returns the body
 /// of a 200 response.
 fn https_get(host: &str, path: &str) -> Result<Vec<u8>, String> {
-    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
-    let (h_host, h_path) = (wide(host), wide(path));
+    let (h_host, h_path) = (crate::win::wide(host), crate::win::wide(path));
     unsafe {
         let session = WinHttpOpen(
             w!("qudelix-widget"),

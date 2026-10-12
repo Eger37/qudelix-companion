@@ -45,6 +45,11 @@ public final class Proto {
         return clampVol(Math.min(want, cur + MAX_UP_N));
     }
 
+    /** Volume for display, e.g. -1200 → "-20.0 dB". */
+    public static String db(int n) {
+        return String.format(java.util.Locale.US, "%+.1f dB", n / 60.0);
+    }
+
     /** Register ACK: vendor 000A, cmd 0xC001 at bytes 4..7. */
     public static boolean isRegisterAck(byte[] f) {
         return f.length >= 8 && u(f[4]) == 0x00 && u(f[5]) == 0x0A && u(f[6]) == 0xC0 && u(f[7]) == 0x01;

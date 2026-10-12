@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HTTPS everywhere (GitHub), except the PC widget's update/log server, which
+     `tailscale serve` exposes as plain http://<PC name>.ts.net:8787 inside the
+     tailnet (the WireGuard tunnel encrypts it). See Updater.baseUrl(). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">ts.net</domain>
+    </domain-config>
+</network-security-config>
