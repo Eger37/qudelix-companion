@@ -2,7 +2,8 @@
 //!
 //! First start of the exe from anywhere else (e.g. Downloads) asks once:
 //! "Install?" → copy to `%LOCALAPPDATA%\Programs\Qudelix Widget\`, add a
-//! Start-menu shortcut, start with Windows, launch the installed copy, exit.
+//! Start-menu shortcut (and, on the first install, a desktop shortcut), start
+//! with Windows, launch the installed copy, exit.
 //! "No" → run portable from where it is (remembered in widget.ini).
 //! Not `Program Files`: writing there needs admin (UAC), which would break the
 //! silent self-update (self_update.rs replaces the exe in place).
@@ -31,6 +32,19 @@ pub fn install_dir() -> Option<PathBuf> {
 
 fn shortcut_path() -> Option<PathBuf> {
     Some(env_dir("APPDATA")?.join("Microsoft\\Windows\\Start Menu\\Programs").join(format!("{APP_DIR}.lnk")))
+}
+
+/// Desktop shortcut. Asks the shell for the Desktop folder: it may be moved
+/// (e.g. into OneDrive), so %USERPROFILE%\Desktop isn't always it.
+fn desktop_shortcut_path() -> Option<PathBuf> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{FOLDERID_Desktop, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+    unsafe {
+        let p = SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, None).ok()?;
+        let dir = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as *const _));
+        Some(PathBuf::from(dir?).join(format!("{APP_DIR}.lnk")))
+    }
 }
 
 fn same_dir(a: &Path, b: &Path) -> bool {
@@ -80,7 +94,7 @@ fn ask_install(owner: HWND, dir: &Path, no_hint: &str) -> bool {
     let text = format!(
         "Install Qudelix Widget for this Windows user?\n\n\
          • copies it to {}\n\
-         • adds it to the Start menu\n\
+         • adds it to the Start menu and the desktop\n\
          • starts it with Windows (can be switched off in ⚙)\n\
          • updates install themselves\n\n\
          No admin rights needed. {no_hint}",
@@ -129,6 +143,10 @@ fn install(dir: &Path) -> Result<(), String> {
     let target = dir.join(EXE_NAME);
     close_running_widget();
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    // First install (not an update/redeploy): also put a shortcut on the
+    // desktop. Later installs leave the desktop alone, so a deleted shortcut
+    // stays deleted.
+    let first_install = !target.exists();
     // Run from the installed copy itself: nothing to copy (renaming it away
     // first would delete the install). Just repair shortcut + autostart.
     if !is_installed_copy() {
@@ -140,8 +158,22 @@ fn install(dir: &Path) -> Result<(), String> {
         }
         std::fs::copy(&me, &target).map_err(|e| format!("copy to {}: {e}", target.display()))?;
     }
-    if let Err(e) = create_shortcut(&target) {
-        crate::log::line(&format!("[install] Start-menu shortcut failed: {e}"));
+    match shortcut_path() {
+        Some(lnk) => {
+            if let Err(e) = create_shortcut(&target, &lnk) {
+                crate::log::line(&format!("[install] Start-menu shortcut failed: {e}"));
+            }
+        }
+        None => crate::log::line("[install] Start-menu shortcut failed: no APPDATA"),
+    }
+    if first_install {
+        match desktop_shortcut_path() {
+            Some(lnk) => match create_shortcut(&target, &lnk) {
+                Ok(()) => crate::log::line(&format!("[install] desktop shortcut {}", lnk.display())),
+                Err(e) => crate::log::line(&format!("[install] desktop shortcut failed: {e}")),
+            },
+            None => crate::log::line("[install] desktop shortcut failed: no Desktop folder"),
+        }
     }
     crate::autostart::set_for(&target, true);
     crate::config::set_flag("autostart_init");
@@ -174,8 +206,7 @@ fn close_running_widget() {
     }
 }
 
-fn create_shortcut(target: &Path) -> Result<(), String> {
-    let lnk = shortcut_path().ok_or("no APPDATA")?;
+fn create_shortcut(target: &Path, lnk: &Path) -> Result<(), String> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(|e| e.to_string())?;
@@ -199,7 +230,7 @@ pub fn uninstall(owner: HWND) -> bool {
     let answer = unsafe {
         MessageBoxW(
             owner,
-            w!("Uninstall Qudelix Widget?\n\nRemoves it from the Start menu and from Windows start-up, and deletes the installed program. Your settings are kept."),
+            w!("Uninstall Qudelix Widget?\n\nRemoves it from the Start menu, the desktop and Windows start-up, and deletes the installed program. Your settings are kept."),
             w!("Qudelix Widget"),
             MB_YESNO | MB_ICONQUESTION,
         )
@@ -208,7 +239,7 @@ pub fn uninstall(owner: HWND) -> bool {
         return false;
     }
     crate::autostart::set(false);
-    if let Some(lnk) = shortcut_path() {
+    for lnk in [shortcut_path(), desktop_shortcut_path()].into_iter().flatten() {
         let _ = std::fs::remove_file(lnk);
     }
     if is_installed_copy() {
