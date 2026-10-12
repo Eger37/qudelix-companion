@@ -846,8 +846,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     SetCapture(hwnd);
                 }
             } else {
+                let mut before = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut before);
                 let _ = ReleaseCapture();
+                // Modal move loop: other messages run meanwhile (even a quit), so
+                // `st` is not used after it — re-read the state pointer instead.
                 SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
+                let mut after = RECT::default();
+                let p = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState;
+                if !p.is_null() && GetWindowRect(hwnd, &mut after).is_ok() && (after.left, after.top) == (before.left, before.top) {
+                    crate::log::line("[click] background → refresh");
+                    (*p).worker.refresh();
+                }
             }
             LRESULT(0)
         }
@@ -901,9 +911,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 return LRESULT(0);
             }
             let st = &mut *state_ptr;
-            if st.drag.take().is_some() {
+            if let Some((_, _, wx, wy)) = st.drag.take() {
                 let _ = ReleaseCapture();
                 st.save_position(hwnd);
+                let mut wr = RECT::default();
+                if GetWindowRect(hwnd, &mut wr).is_ok() && (wr.left, wr.top) == (wx, wy) {
+                    crate::log::line("[click] background → refresh");
+                    st.worker.refresh();
+                }
             } else if let Some(hit) = st.pressed.take() {
                 let _ = KillTimer(hwnd, TIMER_REPEAT);
                 let _ = ReleaseCapture();

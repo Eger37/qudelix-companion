@@ -143,6 +143,11 @@ public class RfcommService extends Service {
                 sleep(1200);
                 QudelixWidget.pushStatus(this, "updated");
             }
+            if (!ACTION_REFRESH.equals(action)) {
+                // Every tap also reads the state back, so the widget shows what
+                // the 5K really did (the reader thread applies the reply).
+                session.write(Proto.REQ_INIT_DATA);
+            }
         } catch (IOException e) {
             Dbg.log(this, "write failed: " + e);
             closeSession();

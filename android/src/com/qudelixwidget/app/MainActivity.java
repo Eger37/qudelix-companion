@@ -378,6 +378,14 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (refresh != null) refresh.run();
+        // Opening the app reads the 5K's current state for the widget too.
+        if (hasBt()) {
+            try {
+                startForegroundService(new android.content.Intent(this, RfcommService.class).setAction(RfcommService.ACTION_REFRESH));
+            } catch (Exception e) {
+                Dbg.log(this, "refresh on open failed: " + e);
+            }
+        }
     }
 
     @Override

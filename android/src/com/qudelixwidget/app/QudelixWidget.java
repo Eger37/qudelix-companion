@@ -65,6 +65,11 @@ public class QudelixWidget extends AppWidgetProvider {
         v.setOnClickPendingIntent(R.id.btn_vol_dn, volumePI(context, -1));
         v.setOnClickPendingIntent(R.id.btn_vol_up, volumePI(context, +1));
         v.setOnClickPendingIntent(R.id.btn_refresh, refreshPI(context));
+        // A tap anywhere that isn't a button (background, title, status, "Playing")
+        // refreshes too: any touch shows the current state.
+        for (int id : new int[]{R.id.root, R.id.title, R.id.status, R.id.playing}) {
+            v.setOnClickPendingIntent(id, refreshPI(context));
+        }
         // Tap the dB readout → volume popup (slider + hold-to-repeat; a widget
         // itself can't get press-and-hold, the launcher takes long-press).
         v.setOnClickPendingIntent(R.id.vol, PendingIntent.getActivity(context, 400,
