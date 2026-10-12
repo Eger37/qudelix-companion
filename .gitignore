@@ -10,6 +10,9 @@ local.env
 # APK signing key: the phone only accepts updates signed with it — never publish
 *.keystore
 *.jks
+# Release signing key (Ed25519) and other secrets — never publish
+secrets/
+*.pem
 # Raw Bluetooth captures contain device addresses and all traffic — keep local
 captures/*.log
 captures/*.cfa

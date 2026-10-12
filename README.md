@@ -51,7 +51,8 @@ sends; the signed firmware is never modified.
 - Release signing key (only for `tools/release.sh`):
   `openssl genpkey -algorithm ed25519 -out ~/.config/qudelix-companion/release-ed25519.pem`, then put
   its public half (`openssl pkey -in <key> -pubout -outform DER | tail -c 32 | xxd -p -c 32`) into
-  `RELEASE_PUBKEY` in `windows/src/release.rs`. Never commit the key; back it up — installed PC
+  `RELEASE_PUBKEY` in `windows/src/release.rs`. A copy may live in the git-ignored `secrets/`
+  (release.sh falls back to `secrets/release-ed25519.pem`). Never commit the key; back it up — installed PC
   widgets accept updates only with a signature from it.
 
 ## Install (Windows)
