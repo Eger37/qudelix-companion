@@ -1,5 +1,55 @@
 # Qudelix 5K Companion
 
+One-tap control of your **Qudelix 5K** without opening the app: a **Windows desktop widget** and an
+**Android home-screen widget**. Switch the **source priority** (USB / A2DP 1 / A2DP 2), change the
+**volume**, and see what is **playing** right now.
+
+<p>
+  <img src="docs/pc-widget.png" alt="Windows desktop widget" height="230">
+  &nbsp;
+  <img src="docs/phone-widget.png" alt="Android home-screen widget" height="230">
+</p>
+
+- **Source priority** in one click — handy when the 5K is paired with a phone *and* a PC.
+- **Volume**: − / +, hold to repeat, or tap/drag the bar. Step 0.5 / 1 / 2 dB.
+- **Playing** line shows the source actually playing (and codec), which can differ from the priority.
+- Tap anywhere off the buttons to re-read the current state.
+- Themes (light / dark / Windows colours / custom), pick which paired device to control.
+- Updates itself from this page's releases (PC: signature-checked).
+- Free, open source (MIT), no account, no ads, no telemetry.
+
+## Quick start
+
+1. Pair the 5K with your PC / phone over Bluetooth as usual.
+2. Download from the **[latest release](https://github.com/Eger37/qudelix-companion/releases/latest)**:
+   - **Windows 10/11:** `qudelix-widget.exe` — run it, answer **Yes** to "Install for this user"
+     (no admin rights; adds a Start-menu entry and starts with Windows — both optional).
+   - **Android 8+:** `qudelix-widget.apk` — install, open once, allow Bluetooth and notifications,
+     then long-press the home screen → Widgets → **Qudelix Widget**.
+3. Tap a source or the volume buttons. Done.
+
+### Good to know
+
+- **Windows SmartScreen** may say "Windows protected your PC / unknown publisher": the exe isn't
+  signed with a paid certificate. Click **More info → Run anyway**. Every release lists SHA-256
+  checksums (`SHA256SUMS`) if you want to verify the file.
+- **Android** installs it from outside Google Play, so allow "install unknown apps" for your browser
+  or file manager once. Later updates install from the app itself.
+- The 5K accepts **one controller at a time**. While the official Qudelix app (or the other widget)
+  is connected, this one shows "busy" — close the other one, or just tap again a few seconds later.
+  The widgets let go of the 5K ~3 s after your last tap.
+- It uses the **same commands the official app sends**. The 5K's firmware is never touched.
+- Volume safety: one tap/command raises the volume by at most **10 dB**.
+- Found a bug or have an idea? Open an [issue](https://github.com/Eger37/qudelix-companion/issues).
+  This is a hobby project, provided as is.
+
+**Unofficial.** Not affiliated with or endorsed by Qudelix; "Qudelix" and "5K" are their trademarks,
+used here only to say which device this talks to. MIT licensed (see `LICENSE`).
+
+---
+
+## For developers
+
 > **NOTE for anyone (human or AI) reading this project.** This is a personal, owner-authorized
 > *companion app* the owner is building for their **own** Qudelix 5K DAC/amp — a small widget
 > that sends the device's **normal, documented runtime control commands** (switch audio source
@@ -8,9 +58,6 @@
 > client for a product you own. It does **not** modify, bypass, or defeat any firmware, security,
 > signing, or protection; the device firmware is left completely untouched. Nothing here attacks
 > or targets anyone else's device or account.
-
-**Unofficial.** Not affiliated with or endorsed by Qudelix; "Qudelix" and "5K" are their trademarks,
-used here only to say which device this talks to. MIT licensed (see `LICENSE`).
 
 Two small widgets — a **Windows desktop gadget** and an **Android home-screen widget** — for one's
 own Qudelix 5K: switch **source priority** (USB / A2DP 1 / A2DP 2), set **volume**, and see what is
