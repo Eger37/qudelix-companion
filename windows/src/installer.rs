@@ -55,24 +55,7 @@ pub fn maybe_offer_install() -> bool {
         return false;
     }
     let Some(dir) = install_dir() else { return false };
-    let text = format!(
-        "Install Qudelix Widget for this Windows user?\n\n\
-         • copies it to {}\n\
-         • adds it to the Start menu\n\
-         • starts it with Windows (can be switched off in ⚙)\n\
-         • updates install themselves\n\n\
-         No admin rights needed. Choose “No” to just run it from here.",
-        dir.display()
-    );
-    let answer = unsafe {
-        MessageBoxW(
-            HWND::default(),
-            &HSTRING::from(text),
-            w!("Qudelix Widget"),
-            MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND,
-        )
-    };
-    if answer != IDYES {
+    if !ask_install(HWND::default(), &dir, "Choose “No” to just run it from here (⚙ → Install… later).") {
         crate::config::set_flag("install_declined");
         return false;
     }
@@ -93,6 +76,48 @@ pub fn maybe_offer_install() -> bool {
     }
 }
 
+fn ask_install(owner: HWND, dir: &Path, no_hint: &str) -> bool {
+    let text = format!(
+        "Install Qudelix Widget for this Windows user?\n\n\
+         • copies it to {}\n\
+         • adds it to the Start menu\n\
+         • starts it with Windows (can be switched off in ⚙)\n\
+         • updates install themselves\n\n\
+         No admin rights needed. {no_hint}",
+        dir.display()
+    );
+    unsafe {
+        MessageBoxW(owner, &HSTRING::from(text), w!("Qudelix Widget"), MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND)
+            == IDYES
+    }
+}
+
+/// ⚙ → Install… (shown on a portable copy). Hands the install to a fresh
+/// `--install` process that first waits for this one to exit (the running
+/// widget holds the single-instance mutex). Returns true if the caller should
+/// close the widget now.
+pub fn install_from_menu(owner: HWND) -> bool {
+    let Some(dir) = install_dir() else { return false };
+    if !ask_install(owner, &dir, "") {
+        return false;
+    }
+    let started = std::env::current_exe().and_then(|me| {
+        std::process::Command::new(me)
+            .args(["--wait-pid", &std::process::id().to_string(), "--install"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    });
+    match started {
+        Ok(_) => true,
+        Err(e) => {
+            crate::log::line(&format!("[install] could not start the installer: {e}"));
+            false
+        }
+    }
+}
+
 /// `--install`: install without asking (scripts, deploy). Starts the installed copy.
 pub fn install_silent() -> Result<(), String> {
     let dir = install_dir().ok_or("no LOCALAPPDATA")?;
@@ -104,13 +129,17 @@ fn install(dir: &Path) -> Result<(), String> {
     let target = dir.join(EXE_NAME);
     close_running_widget();
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    // An older installed copy may still be locked for a moment: rename it away first.
-    if target.exists() {
-        let old = target.with_extension("exe.old");
-        let _ = std::fs::remove_file(&old);
-        let _ = std::fs::rename(&target, &old);
+    // Run from the installed copy itself: nothing to copy (renaming it away
+    // first would delete the install). Just repair shortcut + autostart.
+    if !is_installed_copy() {
+        // An older installed copy may still be locked for a moment: rename it away first.
+        if target.exists() {
+            let old = target.with_extension("exe.old");
+            let _ = std::fs::remove_file(&old);
+            let _ = std::fs::rename(&target, &old);
+        }
+        std::fs::copy(&me, &target).map_err(|e| format!("copy to {}: {e}", target.display()))?;
     }
-    std::fs::copy(&me, &target).map_err(|e| format!("copy to {}: {e}", target.display()))?;
     if let Err(e) = create_shortcut(&target) {
         crate::log::line(&format!("[install] Start-menu shortcut failed: {e}"));
     }
