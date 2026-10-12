@@ -178,11 +178,20 @@ public class MainActivity extends Activity {
         host.setHintTextColor(muted);
         host.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         root.addView(host);
+        android.widget.EditText key = new android.widget.EditText(this);
+        key.setSingleLine(true);
+        key.setHint("PC key, e.g. abcd-efgh-jkmn-pqrs");
+        key.setText(Prefs.getDebugKey(this));
+        key.setTextColor(fg);
+        key.setHintTextColor(muted);
+        key.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        root.addView(key);
         TextView dbgResult = small("", muted);
         Button test = new Button(this);
         test.setText("Save & test connection");
         test.setOnClickListener(v -> {
             Prefs.setDebugHost(this, host.getText().toString());
+            Prefs.setDebugKey(this, key.getText().toString());
             Prefs.setDebugOn(this, dbg.isChecked());
             dbgResult.setText("testing…");
             new Thread(() -> {
@@ -202,10 +211,11 @@ public class MainActivity extends Activity {
             + "builds the PC offers (the higher version of GitHub and PC wins). Off = GitHub updates only, "
             + "nothing leaves the phone.\n\n"
             + "Needs: Tailscale on this phone and on the PC, signed in to the same tailnet; the PC widget "
-            + "with ⚙ → \"Phone debug over Tailscale\" on (it shows the name to enter here). Use the PC's "
-            + "MagicDNS name, not its 100.x address.\n\n"
+            + "with ⚙ → \"Phone debug over Tailscale\" on (it shows the name and the key to enter here). "
+            + "Use the PC's MagicDNS name, not its 100.x address.\n\n"
             + "How it works: the PC widget serves http://<PC name>:8787 inside the tailnet only (tailscale "
-            + "serve → 127.0.0.1); nothing is open to the internet. The log has app version, phone model, "
+            + "serve → 127.0.0.1); nothing is open to the internet. It answers only requests that carry "
+            + "its key, so other devices in the tailnet can't use it. The log has app version, phone model, "
             + "commands and errors — no accounts, no Bluetooth addresses.\n\n"
             + "AI assistants: an assistant on the PC can read phone.log at "
             + "/mnt/c/Users/<you>/AppData/Roaming/qudelix-widget/phone.log to debug the phone without a cable. "

@@ -1,7 +1,8 @@
 //! Self-update from GitHub Releases.
 //!
 //! Asks `api.github.com/repos/<REPO>/releases/latest`; if its tag (`vX.Y.Z`) is
-//! newer than our VERSION, downloads the `qudelix-widget.exe` asset, swaps it in
+//! newer than our VERSION, downloads the `qudelix-widget.exe` asset, checks its
+//! Ed25519 signature (`qudelix-widget.exe.sig`, see release.rs), swaps it in
 //! (a running .exe can be *renamed* but not overwritten: exe → exe.old, new → exe)
 //! and starts it with `--wait-pid <our pid>`; the caller then exits. HTTPS via
 //! WinHTTP (built into Windows) — no TLS crate, no admin rights.
@@ -12,11 +13,15 @@ use std::path::PathBuf;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Networking::WinHttp::*;
 
-use crate::release::{asset_url, json_str, semver, split_url};
+use crate::release::{asset_url, json_str, semver, signature_ok, split_url, RELEASE_PUBKEY};
 
 /// GitHub repository the releases come from (owner/name).
 pub const REPO: &str = "Eger37/qudelix-companion";
 const ASSET: &str = "qudelix-widget.exe";
+/// Raw 64-byte Ed25519 signature of ASSET (tools/release.sh).
+const SIG_ASSET: &str = "qudelix-widget.exe.sig";
+/// Sanity cap on the download (the exe is ~1 MB).
+const MAX_EXE: usize = 32 * 1024 * 1024;
 
 pub enum Outcome {
     UpToDate(String),
@@ -38,9 +43,18 @@ pub fn check_and_apply() -> Result<Outcome, String> {
     crate::log::line(&format!("[self-update] {current} → {latest}: downloading"));
     let (host, path) = split_url(&url).ok_or("bad asset url")?;
     let exe_bytes = https_get(&host, &path)?;
-    if exe_bytes.len() < 200_000 || !exe_bytes.starts_with(b"MZ") {
+    if exe_bytes.len() < 200_000 || exe_bytes.len() > MAX_EXE || !exe_bytes.starts_with(b"MZ") {
         return Err(format!("downloaded file is not an exe ({} bytes)", exe_bytes.len()));
     }
+    // Only an exe signed with the owner's release key is installed: a hijacked
+    // GitHub account or release can't push code to this PC.
+    let sig_url = asset_url(&json, SIG_ASSET).ok_or("release is not signed (no qudelix-widget.exe.sig)")?;
+    let (host, path) = split_url(&sig_url).ok_or("bad signature url")?;
+    let sig = https_get(&host, &path)?;
+    if !signature_ok(&RELEASE_PUBKEY, &exe_bytes, &sig) {
+        return Err("bad signature on the downloaded exe — not installing".into());
+    }
+    crate::log::line("[self-update] signature ok");
     install(&exe_bytes)?;
     Ok(Outcome::Restarting(latest))
 }
@@ -161,6 +175,9 @@ fn https_get(host: &str, path: &str) -> Result<Vec<u8>, String> {
                     break;
                 }
                 body.extend_from_slice(&buf[..read as usize]);
+                if body.len() > MAX_EXE {
+                    return Err(format!("response from {host} is too big"));
+                }
             }
             Ok(body)
         })();

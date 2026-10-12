@@ -33,8 +33,16 @@ public final class Proto {
         return b(0xFF, 0x01, 0x00, 0x03, 0xF0, 0x01, 0x02, 0x00, 0x01, (n >> 8) & 0xFF, n & 0xFF);
     }
 
+    /** Largest volume increase one command may make: 10 dB (hearing safety). */
+    public static final int MAX_UP_N = 600;
+
     public static int clampVol(int n) {
         return Math.max(VOL_MIN_N, Math.min(VOL_MAX_N, n));
+    }
+
+    /** Target volume clamped to range, and at most MAX_UP_N above the 5K's real volume {@code cur}. Down is never limited. */
+    public static int safeVolume(int cur, int want) {
+        return clampVol(Math.min(want, cur + MAX_UP_N));
     }
 
     /** Register ACK: vendor 000A, cmd 0xC001 at bytes 4..7. */

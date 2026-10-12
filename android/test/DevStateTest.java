@@ -41,6 +41,13 @@ public class DevStateTest {
         byte[] y = h("01 00 12");
         check(sp.push(y, y.length).size() == 1, "splitter: partial frame completed");
 
+        // Hearing safety: one command raises the volume by at most 10 dB.
+        check(Proto.safeVolume(-3000, 0) == -2400, "safeVolume: -50 → 0 dB capped at -40 dB");
+        check(Proto.safeVolume(-600, -570) == -570, "safeVolume: small step up passes");
+        check(Proto.safeVolume(-600, -3600) == -3600, "safeVolume: down is never limited");
+        check(Proto.safeVolume(-300, 600) == 0, "safeVolume: never above 0 dB");
+        check(Proto.safeVolume(-3600, -9000) == -3600, "safeVolume: never below -60 dB");
+
         if (failures > 0) {
             System.out.println(failures + " FAILED");
             System.exit(1);

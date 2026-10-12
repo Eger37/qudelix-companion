@@ -69,7 +69,7 @@ public final class Updater {
         String base = baseUrl(c);
         if (!base.isEmpty()) {
             try {
-                JSONObject v = new JSONObject(new String(get(base + "version.json"), "UTF-8"));
+                JSONObject v = new JSONObject(new String(get(c, base + "version.json"), "UTF-8"));
                 Offer pc = new Offer(v.getLong("versionCode"), v.optString("versionName", "?"),
                         base + v.optString("apk", "qudelix-widget.apk"));
                 if (best == null || pc.code >= best.code) best = pc;
@@ -89,7 +89,7 @@ public final class Updater {
             Dbg.log(c, "update: v" + localName + " → v" + best.name + " from " + best.url);
             File apk = new File(c.getCacheDir(), "update.apk");
             try (OutputStream out = new FileOutputStream(apk)) {
-                out.write(get(best.url));
+                out.write(get(c, best.url));
             }
             install(c, apk);
             return "installing v" + best.name + "…";
@@ -102,7 +102,7 @@ public final class Updater {
     /** Latest GitHub release, or null if it has no APK. Tag "vX.Y.Z" → versionCode. */
     private static Offer fromGitHub() throws Exception {
         JSONObject rel = new JSONObject(new String(
-                get("https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest"), "UTF-8"));
+                get(null, "https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest"), "UTF-8"));
         String name = rel.getString("tag_name").replaceFirst("^v", "");
         org.json.JSONArray assets = rel.optJSONArray("assets");
         if (assets == null) return null;
@@ -148,22 +148,31 @@ public final class Updater {
         String base = baseUrl(c);
         if (base.isEmpty()) return "debug is off or no PC name set";
         try {
-            JSONObject v = new JSONObject(new String(get(base + "version.json"), "UTF-8"));
+            JSONObject v = new JSONObject(new String(get(c, base + "version.json"), "UTF-8"));
             return "✓ PC reached (it offers v" + v.optString("versionName", "?") + ")";
         } catch (Exception e) {
+            if ("HTTP 401".equals(e.getMessage())) return "✗ wrong or missing PC key (the PC's ⚙ dialog shows it)";
+            if ("HTTP 429".equals(e.getMessage())) return "✗ too many wrong keys — wait a minute";
             return "✗ " + e.getMessage();
         }
     }
 
-    private static byte[] get(String url) throws Exception {
+    /** The PC key goes only to the PC (pc != null), never to GitHub. */
+    private static byte[] get(Context pc, String url) throws Exception {
         HttpURLConnection h = (HttpURLConnection) new URL(url).openConnection();
         h.setRequestProperty("User-Agent", "qudelix-widget");          // GitHub API requires one
         h.setRequestProperty("Accept", "application/vnd.github+json");
+        if (pc != null) h.setRequestProperty("X-Qudelix-Key", Prefs.getDebugKey(pc));
         h.setConnectTimeout(5000);
         h.setReadTimeout(20000);
         h.setUseCaches(false);
+        // Check the code first: getInputStream() throws a vaguer error on 4xx.
+        if (h.getResponseCode() != 200) {
+            int code = h.getResponseCode();
+            h.disconnect();
+            throw new Exception("HTTP " + code);
+        }
         try (InputStream in = h.getInputStream()) {
-            if (h.getResponseCode() != 200) throw new Exception("HTTP " + h.getResponseCode());
             ByteArrayOutputStream b = new ByteArrayOutputStream();
             byte[] buf = new byte[16384];
             int r;

@@ -48,6 +48,13 @@ public class VolumeActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        if (!RfcommService.hasBtPermission(this)) {
+            // Without it the service can't start (crash on Android 14+): the
+            // settings screen asks for the permission.
+            startActivity(new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            finish();
+            return;
+        }
         int bg = WTheme.bg(this);
         int fg = WTheme.text(this);
         int muted = WTheme.muted(this);
@@ -93,7 +100,7 @@ public class VolumeActivity extends Activity {
                 send(); // the service coalesces bursts onto one session
             }
             @Override public void onStartTrackingTouch(SeekBar s) { userDragging = true; }
-            @Override public void onStopTrackingTouch(SeekBar s) { userDragging = false; }
+            @Override public void onStopTrackingTouch(SeekBar s) { userDragging = false; resync(); }
         });
         root.addView(bar, new LinearLayout.LayoutParams(dp(300), LinearLayout.LayoutParams.WRAP_CONTENT));
 
@@ -164,6 +171,20 @@ public class VolumeActivity extends Activity {
     private void stopRepeat() {
         repeating = false;
         ui.removeCallbacks(repeatTick);
+        resync();
+    }
+
+    /**
+     * Show what the service really set. It caps each increase (Proto.MAX_UP_N),
+     * so after a hold or a fast drag up the 5K may be lower than shown. The
+     * service writes the volume after the burst, so read it a little later.
+     */
+    private void resync() {
+        ui.postDelayed(() -> {
+            if (userDragging || repeating) return;
+            volumeN = Prefs.getVolumeN(this);
+            showVolume();
+        }, 700);
     }
 
     private void step(int deltaN) {

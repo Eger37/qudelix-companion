@@ -51,7 +51,40 @@ const REPEAT_DELAY_MS: u32 = 380;
 const REPEAT_EVERY_MS: u32 = 90;
 const WM_APP_RESHOW: u32 = WM_APP + 1; // Bottom mode: undo a shell hide/minimize
 const WM_APP_FOREGROUND: u32 = WM_APP + 4; // foreground changed → re-check Show Desktop
-const WM_APP_EXIT_FOR_UPDATE: u32 = WM_APP + 6; // the new version is starting: quit
+/// Quit (Close, Uninstall, or the updated exe is starting). Always posted, never
+/// handled inline: `DestroyWindow` frees `AppState`, which the caller may still
+/// be using. Deferred while the settings menu or one of its dialogs is open.
+const WM_APP_QUIT: u32 = WM_APP + 6;
+
+/// Depth of the settings menu and its dialogs (modal loops that still hold
+/// `&mut AppState`), and a quit that arrived meanwhile. See `ModalGuard`.
+static MODAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static QUIT_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Marks a modal section; on leaving the last one, a deferred quit is re-posted.
+struct ModalGuard(HWND);
+
+impl ModalGuard {
+    fn new(hwnd: HWND) -> Self {
+        MODAL.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ModalGuard(hwnd)
+    }
+}
+
+impl Drop for ModalGuard {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        if MODAL.fetch_sub(1, SeqCst) == 1 && QUIT_PENDING.swap(false, SeqCst) {
+            post_quit(self.0);
+        }
+    }
+}
+
+fn post_quit(hwnd: HWND) {
+    unsafe {
+        let _ = PostMessageW(hwnd, WM_APP_QUIT, WPARAM(0), LPARAM(0));
+    }
+}
 /// CLI → running widget: set priority (wParam = v). See `forward_to_widget`.
 pub const WM_APP_CLI_PRIORITY: u32 = WM_APP + 2;
 /// CLI → running widget: set absolute volume (wParam = n as u16, dB*60 signed).
@@ -152,9 +185,7 @@ impl AppState {
                 crate::log::line("[click] refresh");
                 self.worker.refresh();
             }
-            Hit::Close => unsafe {
-                let _ = DestroyWindow(hwnd);
-            },
+            Hit::Close => post_quit(hwnd),
             Hit::Settings => self.settings_menu(hwnd),
             Hit::VolDown | Hit::VolUp | Hit::Bar => {} // acted on press + repeat/drag
         }
@@ -194,6 +225,9 @@ impl AppState {
         const D_FIRST: usize = 201;
         const L_FIRST: usize = 300;
         const L_CUSTOM: usize = 320;
+        // Menu, colour picker, message boxes: other messages are dispatched while
+        // they're open, and we hold &mut self — a quit must wait until we return.
+        let _modal = ModalGuard::new(hwnd);
         unsafe {
             let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
             let add = |m: HMENU, id: usize, on: bool, text: &str| {
@@ -290,7 +324,7 @@ impl AppState {
                 S_1 => n.step_n = 60,
                 S_2 => n.step_n = 120,
                 CLOSE => {
-                    let _ = DestroyWindow(hwnd);
+                    post_quit(hwnd);
                     return;
                 }
                 U_CHECK => {
@@ -300,7 +334,7 @@ impl AppState {
                 U_AUTO => n.auto_update = !n.auto_update,
                 UNINSTALL => {
                     if crate::installer::uninstall(hwnd) {
-                        let _ = DestroyWindow(hwnd);
+                        post_quit(hwnd);
                     }
                     return;
                 }
@@ -466,7 +500,7 @@ fn run_update_check(hwnd_raw: isize, status: &std::sync::Mutex<String>, manual: 
             crate::log::line(&format!("[self-update] installed v{v}, restarting"));
             note(format!("updating to v{v}…"));
             unsafe {
-                let _ = PostMessageW(HWND(hwnd_raw as *mut c_void), WM_APP_EXIT_FOR_UPDATE, WPARAM(0), LPARAM(0));
+                let _ = PostMessageW(HWND(hwnd_raw as *mut c_void), WM_APP_QUIT, WPARAM(0), LPARAM(0));
             }
         }
         Err(e) => {
@@ -507,36 +541,42 @@ fn apply_dwm_frame(hwnd: HWND, t: &ui::Theme) {
     }
 }
 
-/// Create the window, pin it to the desktop, and run the message loop.
 /// ⚙ → "Phone debug over Tailscale…": explain, then switch the phone's update/log server.
 fn phone_debug_toggle(hwnd: HWND) {
-    if crate::update_server::enabled() {
-        crate::update_server::set_enabled(false);
-        return;
-    }
+    let was_on = crate::update_server::enabled();
     let name = crate::update_server::tailnet_name();
-    let text = format!(
-        "Phone debug over Tailscale\n\n\
-         What it does: the Android widget sends its log and crashes to this PC \
-         (%APPDATA%\\qudelix-widget\\phone.log) and can install test builds from it \
-         (the folder %APPDATA%\\qudelix-widget\\updates, filled by android/publish_update.sh).\n\n\
-         Needs: Tailscale on this PC and on the phone, in the same tailnet. On the phone: \
-         settings → \"Debug over Tailscale\" → tick it and enter this PC's name:\n\n    {}\n\n\
-         How it works: Tailscale forwards port {} of this PC inside the tailnet only to the \
-         widget (127.0.0.1:8788). Nothing is opened to the internet or the local network; no admin rights.\n\n\
-         AI assistants can read phone.log to debug the phone without a cable.\n\n\
-         Turn it on?",
+    let setup = format!(
+        "On the phone: settings → \"Debug over Tailscale\" → tick it and enter\n\n    \
+         PC name:  {}\n    PC key:     {}\n\n",
         name.as_deref().unwrap_or("(Tailscale not running — start it and try again)"),
-        crate::update_server::PORT,
+        crate::update_server::phone_key(),
     );
-    let on = unsafe {
+    let text = if was_on {
+        format!("Phone debug over Tailscale is ON.\n\n{setup}Turn it off?")
+    } else {
+        format!(
+            "Phone debug over Tailscale\n\n\
+             What it does: the Android widget sends its log and crashes to this PC \
+             (%APPDATA%\\qudelix-widget\\phone.log) and can install test builds from it \
+             (the folder %APPDATA%\\qudelix-widget\\updates, filled by android/publish_update.sh).\n\n\
+             Needs: Tailscale on this PC and on the phone, in the same tailnet. {setup}\
+             How it works: Tailscale forwards port {} of this PC inside the tailnet only to the \
+             widget (127.0.0.1:8788). Nothing is opened to the internet or the local network; no admin rights. \
+             Requests without the key are refused, so other devices in the tailnet can't use it.\n\n\
+             AI assistants can read phone.log to debug the phone without a cable.\n\n\
+             Turn it on?",
+            crate::update_server::PORT,
+        )
+    };
+    let yes = unsafe {
         MessageBoxW(hwnd, &HSTRING::from(text), w!("Qudelix Widget"), MB_YESNO | MB_ICONINFORMATION) == IDYES
     };
-    if on {
-        crate::update_server::set_enabled(true);
+    if yes {
+        crate::update_server::set_enabled(!was_on);
     }
 }
 
+/// Create the window, pin it to the desktop, and run the message loop.
 pub fn run() -> windows::core::Result<()> {
     unsafe {
         // Single instance: if a mutex of this name already exists, another copy
@@ -942,8 +982,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             LRESULT(0)
         }
-        WM_APP_EXIT_FOR_UPDATE => {
-            let _ = DestroyWindow(hwnd); // the new exe is already waiting for us to exit
+        WM_APP_QUIT => {
+            if MODAL.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                // Settings menu / dialog open: close the menu, quit when it returns.
+                QUIT_PENDING.store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = EndMenu();
+            } else {
+                let _ = DestroyWindow(hwnd); // after an update the new exe is waiting for us to exit
+            }
             LRESULT(0)
         }
         WM_APP_FOREGROUND => {

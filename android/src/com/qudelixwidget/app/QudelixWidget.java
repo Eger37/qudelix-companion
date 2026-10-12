@@ -27,32 +27,8 @@ public class QudelixWidget extends AppWidgetProvider {
             update(context);
             return;
         }
-        if (RfcommService.ACTION_PRIORITY.equals(action) || RfcommService.ACTION_VOLUME.equals(action)
-                || RfcommService.ACTION_REFRESH.equals(action)
-                || RfcommService.ACTION_VOLUME_SET.equals(action)) {
-            Dbg.log(context, "widget tap " + action + " value=" + intent.getIntExtra(RfcommService.EXTRA_VALUE, 0));
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-                    && context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)
-                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                Dbg.log(context, "no BLUETOOTH_CONNECT permission — not starting service");
-                pushStatus(context, "open app → grant Bluetooth");
-                return;
-            }
-            Intent svc = new Intent(context, RfcommService.class)
-                    .setAction(action)
-                    .putExtra(RfcommService.EXTRA_VALUE, intent.getIntExtra(RfcommService.EXTRA_VALUE, 0));
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(svc);
-                } else {
-                    context.startService(svc);
-                }
-            } catch (Exception e) {
-                Dbg.log(context, "startForegroundService failed: " + e);
-                pushStatus(context, "start failed");
-            }
-            return;
-        }
+        // Button taps go to the non-exported TapReceiver, never here: this provider
+        // is exported, so any app could send it a broadcast.
         super.onReceive(context, intent);
     }
 
@@ -117,7 +93,7 @@ public class QudelixWidget extends AppWidgetProvider {
             int segN = segmentN(i);
             if (known && volN >= segN - 150) k.accentBg(v, SEG_IDS[i], R.drawable.w_seg_tint, R.drawable.w_seg_on);
             else k.bg(v, SEG_IDS[i], k.segOff, k.segTint);
-            Intent seg = new Intent(context, QudelixWidget.class)
+            Intent seg = new Intent(context, TapReceiver.class)
                     .setAction(RfcommService.ACTION_VOLUME_SET)
                     .putExtra(RfcommService.EXTRA_VALUE, segN);
             v.setOnClickPendingIntent(SEG_IDS[i], PendingIntent.getBroadcast(context, 500 + i, seg, piFlags()));
@@ -207,19 +183,19 @@ public class QudelixWidget extends AppWidgetProvider {
     }
 
     private static PendingIntent priorityPI(Context context, int value) {
-        Intent i = new Intent(context, QudelixWidget.class)
+        Intent i = new Intent(context, TapReceiver.class)
                 .setAction(RfcommService.ACTION_PRIORITY)
                 .putExtra(RfcommService.EXTRA_VALUE, value);
         return PendingIntent.getBroadcast(context, 100 + value, i, piFlags());
     }
 
     private static PendingIntent refreshPI(Context context) {
-        Intent i = new Intent(context, QudelixWidget.class).setAction(RfcommService.ACTION_REFRESH);
+        Intent i = new Intent(context, TapReceiver.class).setAction(RfcommService.ACTION_REFRESH);
         return PendingIntent.getBroadcast(context, 300, i, piFlags());
     }
 
     private static PendingIntent volumePI(Context context, int step) {
-        Intent i = new Intent(context, QudelixWidget.class)
+        Intent i = new Intent(context, TapReceiver.class)
                 .setAction(RfcommService.ACTION_VOLUME)
                 .putExtra(RfcommService.EXTRA_VALUE, step);
         return PendingIntent.getBroadcast(context, 200 + (step > 0 ? 1 : 0), i, piFlags());

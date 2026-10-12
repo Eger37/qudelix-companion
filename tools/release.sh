@@ -15,6 +15,15 @@ GH="${GH:-$(command -v gh || echo "$HOME/.local/bin/gh")}"
 git fetch -q origin
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || { echo "main is not in sync with origin/main"; exit 1; }
 if "$GH" release view "v$VN" >/dev/null 2>&1; then echo "release v$VN already exists"; exit 1; fi
+# Release signing key (Ed25519). Private: only on this machine, never in git.
+# The PC widget installs an update only if its .sig verifies against the public
+# key in windows/src/release.rs. Back this file up: without it no future
+# release can update existing installs.
+KEY="${QUDELIX_RELEASE_KEY:-$HOME/.config/qudelix-companion/release-ed25519.pem}"
+[[ -f "$KEY" ]] || { echo "no release key at $KEY (make one: openssl genpkey -algorithm ed25519 -out $KEY, then put its public half in windows/src/release.rs)"; exit 1; }
+pub_hex=$(openssl pkey -in "$KEY" -pubout -outform DER | tail -c 32 | xxd -p -c 32)
+src_hex=$(sed -n '/RELEASE_PUBKEY: \[u8; 32\]/,/];/p' windows/src/release.rs | grep -o '0x[0-9a-f]\{2\}' | tr -d '\n' | sed 's/0x//g')
+[[ "$pub_hex" == "$src_hex" ]] || { echo "release key does not match RELEASE_PUBKEY in windows/src/release.rs"; exit 1; }
 
 OLD_VERSION="$(cat VERSION)"
 trap 'echo "$OLD_VERSION" > VERSION; echo "release failed — VERSION restored"' ERR
@@ -29,7 +38,22 @@ dex=$(python3 -I -c "import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).geti
 (cd android && ./test.sh)
 (cd windows && cargo test --locked -q && cargo build --locked --release --target x86_64-pc-windows-gnu --features ble)
 mkdir -p dist
+rm -f dist/*.sig dist/SHA256SUMS
 cp android/build/qudelix-widget.apk windows/target/x86_64-pc-windows-gnu/release/qudelix-widget.exe dist/
+# Nothing personal may ship: this PC's tailnet name, the Linux / Windows user names.
+private="$(sed -n 's/^UPDATE_HOST=//p' local.env 2>/dev/null | cut -d. -f1-2)"
+win_user="$(sed -n 's/^WIN_HOME=//p' local.env 2>/dev/null | xargs -r basename)"
+for f in dist/qudelix-widget.exe dist/qudelix-widget.apk; do
+  for s in "$(whoami)" $win_user $private; do
+    [[ -z "$s" ]] || ! grep -aqF "$s" "$f" || { echo "$f contains \"$s\" — refusing to release"; false; }
+  done
+done
+# Sign (raw 64-byte Ed25519 over the whole file) and check the signature.
+for f in dist/qudelix-widget.exe dist/qudelix-widget.apk; do
+  openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$f" -out "$f.sig"
+  openssl pkeyutl -verify -inkey "$KEY" -rawin -in "$f" -sigfile "$f.sig" >/dev/null
+done
+(cd dist && sha256sum qudelix-widget.exe qudelix-widget.apk > SHA256SUMS)
 
 # 2. Commit, tag, push, release.
 git add VERSION
@@ -38,7 +62,7 @@ if [[ "$(git rev-parse -q --verify "refs/tags/v$VN^{commit}" || true)" != "$(git
   git tag "v$VN"
 fi
 git push -q origin HEAD "v$VN"
-"$GH" release create "v$VN" dist/qudelix-widget.exe dist/qudelix-widget.apk --title "v$VN" --generate-notes
+"$GH" release create "v$VN" dist/qudelix-widget.exe dist/qudelix-widget.apk dist/*.sig dist/SHA256SUMS --title "v$VN" --generate-notes
 trap - ERR
 echo "released v$VN"
 

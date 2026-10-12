@@ -21,6 +21,11 @@ ble = [
     "windows/Storage_Streams",
 ]
 
+[dependencies]
+# Verifies the Ed25519 signature of a self-update download (release.rs).
+# Pure Rust; verification only, so no RNG / PEM features.
+ed25519-compact = { version = "2.6", default-features = false, features = ["std"] }
+
 # Windows-only dependencies: the host build (for `cargo test` of the protocol
 # core) needs none of this.
 [target.'cfg(windows)'.dependencies]
@@ -31,6 +36,7 @@ version = "0.58"
 features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Cryptography",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Controls",
     "Win32_UI_Controls_Dialogs",

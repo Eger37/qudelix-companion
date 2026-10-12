@@ -19,7 +19,16 @@ else
   VN="$V_MAJ.$V_MIN.$(( V_PAT + 1 ))"
 fi
 echo "$VN" > ../VERSION
-./build_apk.sh
+# The PC widget refuses requests without its key (widget.ini phone_key); bake it in
+# so this build seeds it on the phone. Made here if the PC hasn't made one yet.
+INI="$WIN_HOME/AppData/Roaming/qudelix-widget/widget.ini"
+DEBUG_KEY="$(sed -n 's/^phone_key=//p' "$INI" 2>/dev/null | tr -d '\r[:space:]')"
+if [[ ! "$DEBUG_KEY" =~ ^[a-z0-9]{4}(-[a-z0-9]{4}){3}$ ]]; then
+  DEBUG_KEY="$(python3 -I -c 'import secrets; a="abcdefghjkmnpqrstuvwxyz23456789"; k="".join(secrets.choice(a) for _ in range(16)); print("-".join(k[i:i+4] for i in range(0,16,4)))')"
+  mkdir -p "$(dirname "$INI")"
+  printf 'phone_key=%s\n' "$DEBUG_KEY" >> "$INI"
+fi
+DEBUG_KEY="$DEBUG_KEY" ./build_apk.sh
 IFS=. read -r V_MAJ V_MIN V_PAT <<< "$VN"
 VC=$(( V_MAJ * 1000000 + V_MIN * 1000 + V_PAT ))
 

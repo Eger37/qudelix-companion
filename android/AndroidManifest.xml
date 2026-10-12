@@ -161,6 +161,11 @@
                 android:resource="@xml/widget_info" />
         </receiver>
 
+        <!-- Widget button taps. Not exported: only our own PendingIntents reach it. -->
+        <receiver
+            android:name=".TapReceiver"
+            android:exported="false" />
+
         <service
             android:name=".RfcommService"
             android:exported="false"

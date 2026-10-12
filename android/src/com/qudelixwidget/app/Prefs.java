@@ -53,12 +53,21 @@ public final class Prefs {
     /** The PC's Tailscale MagicDNS name, e.g. "my-pc.tailnet-name.ts.net"; "" = not set. */
     public static String getDebugHost(Context c) { return p(c).getString("debugHost", ""); }
     public static void setDebugHost(Context c, String h) { p(c).edit().putString("debugHost", h.trim()).apply(); }
+    /** The PC widget's key (⚙ dialog on the PC), sent with every request to it; "" = not set. */
+    public static String getDebugKey(Context c) { return p(c).getString("debugKey", ""); }
+    public static void setDebugKey(Context c, String k) { p(c).edit().putString("debugKey", k.trim()).apply(); }
 
-    /** Builds made with UPDATE_HOST (the owner's tailnet builds) switch debug on once, so
-     *  the setting survives a later update to the public GitHub build. */
+    /** Builds made with UPDATE_HOST / DEBUG_KEY (the owner's tailnet builds) switch debug on
+     *  once, so the setting survives a later update to the public GitHub build. */
     static void seedDebug(Context c) {
-        if (BuildInfo.UPDATE_HOST.isEmpty() || p(c).contains("debugHost")) return;
-        p(c).edit().putString("debugHost", BuildInfo.UPDATE_HOST).putBoolean("debugOn", true).apply();
+        SharedPreferences.Editor e = p(c).edit();
+        if (!BuildInfo.UPDATE_HOST.isEmpty() && !p(c).contains("debugHost")) {
+            e.putString("debugHost", BuildInfo.UPDATE_HOST).putBoolean("debugOn", true);
+        }
+        if (!BuildInfo.DEBUG_KEY.isEmpty() && !p(c).contains("debugKey")) {
+            e.putString("debugKey", BuildInfo.DEBUG_KEY);
+        }
+        e.apply();
     }
 
     public static String getStatus(Context c) { return p(c).getString("status", "tap ↻"); }
