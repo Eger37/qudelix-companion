@@ -17,14 +17,17 @@ git fetch -q origin
 if "$GH" release view "v$VN" >/dev/null 2>&1; then echo "release v$VN already exists"; exit 1; fi
 # Release signing key (Ed25519). Private: only on this machine, never in git.
 # The PC widget installs an update only if its .sig verifies against the public
-# key in windows/src/release.rs. Back this file up: without it no future
-# release can update existing installs.
+# keys in windows/src/release.rs. Back this file up: without it no future
+# release can update existing installs. Key rotation (main key lost/leaked):
+# put a new pair into release.rs and release once with
+# QUDELIX_RELEASE_KEY=<backup key>; the offline backup key is trusted too.
 KEY="${QUDELIX_RELEASE_KEY:-$HOME/.config/qudelix-companion/release-ed25519.pem}"
 [[ -f "$KEY" ]] || KEY="secrets/release-ed25519.pem"   # git-ignored copy in the repo
 [[ -f "$KEY" ]] || { echo "no release key at $KEY (make one: openssl genpkey -algorithm ed25519 -out $KEY, then put its public half in windows/src/release.rs)"; exit 1; }
 pub_hex=$(openssl pkey -in "$KEY" -pubout -outform DER | tail -c 32 | xxd -p -c 32)
-src_hex=$(sed -n '/RELEASE_PUBKEY: \[u8; 32\]/,/];/p' windows/src/release.rs | grep -o '0x[0-9a-f]\{2\}' | tr -d '\n' | sed 's/0x//g')
-[[ "$pub_hex" == "$src_hex" ]] || { echo "release key does not match RELEASE_PUBKEY in windows/src/release.rs"; exit 1; }
+src_hex() { sed -n "/$1: \[u8; 32\]/,/];/p" windows/src/release.rs | grep -o '0x[0-9a-f]\{2\}' | tr -d '\n' | sed 's/0x//g'; }
+[[ "$pub_hex" == "$(src_hex RELEASE_PUBKEY)" || "$pub_hex" == "$(src_hex BACKUP_PUBKEY)" ]] \
+  || { echo "release key matches neither RELEASE_PUBKEY nor BACKUP_PUBKEY in windows/src/release.rs"; exit 1; }
 
 OLD_VERSION="$(cat VERSION)"
 trap 'echo "$OLD_VERSION" > VERSION; echo "release failed — VERSION restored"' ERR
