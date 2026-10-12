@@ -48,6 +48,11 @@ sends; the signed firmware is never modified.
   `keytool -genkeypair -keystore android/debug.keystore -alias androiddebugkey -storepass android
   -keypass android -keyalg RSA -validity 10000 -dname "CN=Android Debug"` (it is git-ignored —
   keep it: the phone only accepts updates signed with the same key).
+- Release signing key (only for `tools/release.sh`):
+  `openssl genpkey -algorithm ed25519 -out ~/.config/qudelix-companion/release-ed25519.pem`, then put
+  its public half (`openssl pkey -in <key> -pubout -outform DER | tail -c 32 | xxd -p -c 32`) into
+  `RELEASE_PUBKEY` in `windows/src/release.rs`. Never commit the key; back it up — installed PC
+  widgets accept updates only with a signature from it.
 
 ## Install (Windows)
 
@@ -75,7 +80,10 @@ Windows — no admin rights (not Program Files: that needs UAC and would break s
   exists): the phone's update + log server on `127.0.0.1:8788`, exposed to the tailnet only as
   `:8787` by `tailscale serve` (no admin). Serves only `version.json` + the APK from
   `%APPDATA%\qudelix-widget\updates`; `POST /log` appends to `%APPDATA%\qudelix-widget\phone.log`.
-  Switching it off removes the tailnet forward. The dialog shows the PC name to enter on the phone.
+  Switching it off removes the tailnet forward. The dialog shows the PC name and the **PC key**
+  (widget.ini `phone_key`) to enter on the phone; requests without the key get 401, so other tailnet
+  devices can't use it. Limits: 4 connections, 8 KB headers, 512 KB per log batch, phone.log rotated
+  at 8 MB, a one-minute lockout after 10 wrong keys.
 
 ## Android (`android/`)
 
@@ -89,24 +97,31 @@ Windows — no admin rights (not Program Files: that needs UAC and would break s
   Settings (app screen, or long-press the widget → Customize): theme incl. custom background/accent,
   device (auto or any paired device), volume step.
 - **Debug over Tailscale** (settings screen, off by default): tick it and enter the PC's MagicDNS
-  name → every log line and crash is mirrored to the PC (`phone.log` above, readable from WSL by
+  name and PC key → every log line and crash is mirrored to the PC (`phone.log` above, readable from WSL by
   an AI assistant) and test builds from the PC are installed too (higher version wins; the PC on a
-  tie). Kept across updates. One APK for everyone: public builds have no PC name baked in
-  (`PUBLIC_BUILD=1`); the owner's tailnet builds (`UPDATE_HOST` in `local.env`) switch it on once.
+  tie). Kept across updates. One APK for everyone: public builds have no PC name or key baked in
+  (`PUBLIC_BUILD=1`); the owner's tailnet builds (`UPDATE_HOST` in `local.env`, the key from the
+  PC's widget.ini) switch it on once.
+- Safety: widget buttons go to a non-exported receiver (other apps can't send commands); a volume
+  change starts from the 5K's real volume and goes up at most 10 dB per command.
 
 ## Releases & auto-update
 
 - `tools/release.sh X.Y.Z` — checks (gh login, clean `main` in sync with origin), builds + tests
-  both widgets, tags `vX.Y.Z`, pushes, and creates a GitHub release with `qudelix-widget.exe` and
-  the public `qudelix-widget.apk`; only then (owner's PC) publishes the tailnet build and deploys
-  this PC. Re-runnable after a failure. Builds remap `$HOME` out of the exe's paths.
+  both widgets, refuses if a file contains the local user names or the PC's tailnet name, signs
+  both with the release key (`*.sig`, raw Ed25519), tags `vX.Y.Z`, pushes, and creates a GitHub
+  release with `qudelix-widget.exe`, the public `qudelix-widget.apk`, the signatures and `SHA256SUMS`;
+  only then (owner's PC) publishes the tailnet build and deploys this PC. Re-runnable after a
+  failure. Builds remap `$HOME` out of the exe's paths.
 - **PC widget** checks the latest release 30 s after start and every 6 h (⚙ → "Check for updates
-  now" / "Automatic updates"). A newer exe is downloaded (WinHTTP), swapped in (the running exe is
+  now" / "Automatic updates"). A newer exe is downloaded (WinHTTP), installed only if
+  `qudelix-widget.exe.sig` verifies against the built-in public key, swapped in (the running exe is
   renamed to `.old`) and relaunched — no admin rights.
 - **Phone** checks the same release every ~15 min / on "Check for updates now"; with "Debug over
   Tailscale" on it also checks the PC and takes the higher version. The first install is manual;
   later ones install silently on Android 12+ (same signing key required).
-- Forks: change `REPO` in `windows/src/self_update.rs` and `GITHUB_REPO` in `Updater.java`.
+- Forks: change `REPO` in `windows/src/self_update.rs`, `RELEASE_PUBKEY` in `windows/src/release.rs`
+  (your own key) and `GITHUB_REPO` in `Updater.java`.
 
 ## First install on a new phone
 

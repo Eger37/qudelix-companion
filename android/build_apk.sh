@@ -15,9 +15,10 @@ export PATH="$JDK/bin:$PATH"
 OUT=build
 # Machine-specific values (update server) — optional; see ../local.env.example.
 [[ -f ../local.env ]] && source ../local.env
-# PUBLIC_BUILD=1 (tools/release.sh, GitHub asset): no PC name baked in — users set
-# "Debug over Tailscale" on the phone. The owner's tailnet build seeds it from UPDATE_HOST.
-[[ "${PUBLIC_BUILD:-}" == 1 ]] && UPDATE_HOST=
+# PUBLIC_BUILD=1 (tools/release.sh, GitHub asset): no PC name or key baked in — users
+# set "Debug over Tailscale" on the phone. The owner's tailnet build (publish_update.sh)
+# seeds it from UPDATE_HOST and DEBUG_KEY (the PC widget's phone_key).
+[[ "${PUBLIC_BUILD:-}" == 1 ]] && UPDATE_HOST= && DEBUG_KEY=
 # Semantic version shared with the Windows widget: ../VERSION (MAJOR.MINOR.PATCH).
 # versionCode is derived so it always grows: MAJOR*1000000 + MINOR*1000 + PATCH.
 VERSION_NAME="$(tr -d '[:space:]' < ../VERSION)"
@@ -37,7 +38,8 @@ echo "[2/6] aapt2 link"
   --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" \
   "$OUT/res.zip"
 
-# Build-time constants (kept out of git): the update/log server host.
+# Build-time constants (kept out of git): the update/log server host and its key.
+[[ "${UPDATE_HOST:-}" =~ ^[A-Za-z0-9.-]*$ && "${DEBUG_KEY:-}" =~ ^[a-z0-9-]*$ ]] || { echo "bad UPDATE_HOST / DEBUG_KEY"; exit 1; }
 mkdir -p "$OUT/gen/com/qudelixwidget/app"
 cat > "$OUT/gen/com/qudelixwidget/app/BuildInfo.java" <<JAVA
 package com.qudelixwidget.app;
@@ -45,6 +47,7 @@ package com.qudelixwidget.app;
 final class BuildInfo {
     private BuildInfo() {}
     static final String UPDATE_HOST = "${UPDATE_HOST:-}";
+    static final String DEBUG_KEY = "${DEBUG_KEY:-}";
 }
 JAVA
 

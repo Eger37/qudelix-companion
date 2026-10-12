@@ -77,6 +77,7 @@ public final class RemoteLog {
             h.setDoOutput(true);
             h.setFixedLengthStreamingMode(body.length);
             h.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
+            h.setRequestProperty("X-Qudelix-Key", Prefs.getDebugKey(c));
             try (OutputStream out = h.getOutputStream()) {
                 out.write(body);
             }

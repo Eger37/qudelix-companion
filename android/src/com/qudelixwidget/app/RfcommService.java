@@ -39,7 +39,7 @@ import java.util.concurrent.TimeUnit;
  *  - a reader thread drains everything the 5K sends (unread data makes it drop the link).
  * Foreground service because widget taps start it from the background.
  */
-@SuppressLint("MissingPermission") // checked in hasBtPermission()
+@SuppressLint("MissingPermission") // checked in hasBtPermission(Context)
 public class RfcommService extends Service {
 
     public static final String ACTION_PRIORITY = "com.qudelixwidget.app.PRIORITY";
@@ -71,19 +71,20 @@ public class RfcommService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        goForeground(); // must happen promptly after startForegroundService()
         lastStartId = startId;
+        // Callers check the permission first: on Android 14+ a connectedDevice
+        // foreground service can't start without BLUETOOTH_CONNECT.
+        if (!hasBtPermission(this) || !goForeground()) {
+            QudelixWidget.pushStatus(this, "open app → grant Bluetooth");
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
         if (intent == null || intent.getAction() == null) {
             scheduleRelease();
             return START_NOT_STICKY;
         }
         final String action = intent.getAction();
         final int value = intent.getIntExtra(EXTRA_VALUE, 0);
-        if (!hasBtPermission()) {
-            QudelixWidget.pushStatus(this, "open app → grant Bluetooth");
-            scheduleRelease();
-            return START_NOT_STICKY;
-        }
         if (ACTION_PRIORITY.equals(action)) {
             Prefs.setPriority(this, value); // optimistic; the 5K's echo confirms it
             QudelixWidget.update(this);
@@ -120,21 +121,23 @@ public class RfcommService extends Service {
             if (ACTION_PRIORITY.equals(action)) {
                 session.write(Proto.setPriority(value));
                 QudelixWidget.pushStatus(this, "✓");
-            } else if (ACTION_VOLUME.equals(action)) {
-                // Step from the 5K's real volume (arrives with the init data).
-                waitFor(() -> state.volumeN != null, 600);
-                int base = state.volumeN != null ? state.volumeN : Prefs.getVolumeN(this);
-                int n = Proto.clampVol(base + value * Prefs.getStepN(this));
-                state.volumeN = n;
-                Prefs.setVolumeN(this, n);
-                session.write(Proto.setVolume(n));
-                QudelixWidget.pushStatus(this, "✓");
-            } else if (ACTION_VOLUME_SET.equals(action)) {
-                int n = Proto.clampVol(value);
-                state.volumeN = n;
-                Prefs.setVolumeN(this, n);
-                session.write(Proto.setVolume(n));
-                QudelixWidget.pushStatus(this, "✓");
+            } else if (ACTION_VOLUME.equals(action) || ACTION_VOLUME_SET.equals(action)) {
+                // Always move from the 5K's real volume (it arrives with the init
+                // data), never from the cached one: a stale cache could make a
+                // "+" tap a big jump up.
+                Integer cur = realVolume();
+                if (cur == null) {
+                    QudelixWidget.pushStatus(this, "volume unknown — tap again");
+                } else {
+                    int want = ACTION_VOLUME.equals(action) ? cur + value * Prefs.getStepN(this) : value;
+                    int n = Proto.safeVolume(cur, want);
+                    boolean capped = n != Proto.clampVol(want);
+                    if (capped) Dbg.log(this, "volume capped: " + cur + " → " + n + " (asked " + want + ")");
+                    synchronized (state) { state.volumeN = n; }
+                    Prefs.setVolumeN(this, n);
+                    session.write(Proto.setVolume(n));
+                    QudelixWidget.pushStatus(this, capped ? "max +" + Proto.MAX_UP_N / 60 + " dB per tap" : "✓");
+                }
             } else if (ACTION_REFRESH.equals(action)) {
                 if (!fresh) session.write(Proto.REQ_INIT_DATA); // a new session already asked
                 sleep(1200);
@@ -148,7 +151,13 @@ public class RfcommService extends Service {
         scheduleRelease();
     }
 
-    /** Reuse the open session or open a new one (channel scan). */
+    /** The volume the 5K reported in this session (waits briefly for the init data), or null. */
+    private Integer realVolume() {
+        waitFor(() -> { synchronized (state) { return state.volumeN != null; } }, 1500);
+        synchronized (state) { return state.volumeN; }
+    }
+
+    /** Reuse the open session or open a new one (SDP lookup, one connect). */
     private boolean ensureSession() {
         if (session != null && session.alive) return true;
         closeSession();
@@ -210,6 +219,9 @@ public class RfcommService extends Service {
             session.close();
             session = null;
         }
+        // Another controller may change the volume while we're away: the next
+        // session must read it again before any volume step.
+        synchronized (state) { state.volumeN = null; }
     }
 
     // ── release after idle ─────────────────────────────────────────────────────
@@ -298,7 +310,8 @@ public class RfcommService extends Service {
 
     // ── plumbing ───────────────────────────────────────────────────────────────
 
-    private void goForeground() {
+    /** Must happen promptly after startForegroundService(); false if the system refused. */
+    private boolean goForeground() {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (nm != null && nm.getNotificationChannel(CHANNEL_ID) == null) {
             NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "Qudelix", NotificationManager.IMPORTANCE_LOW);
@@ -318,14 +331,17 @@ public class RfcommService extends Service {
                 startForeground(NOTIF_ID, n);
             }
             Dbg.log(this, "foreground ok");
+            return true;
         } catch (Exception e) {
             Dbg.log(this, "startForeground failed: " + e);
+            return false;
         }
     }
 
-    private boolean hasBtPermission() {
+    /** Check before starting this service: without it the foreground start fails on Android 14+. */
+    static boolean hasBtPermission(Context c) {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.S
-                || checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
+                || c.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
     }
 
     private BluetoothAdapter adapter() {
