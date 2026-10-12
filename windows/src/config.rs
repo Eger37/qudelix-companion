@@ -31,15 +31,24 @@ fn read_map() -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 
+/// Serialises read-modify-write: the UI, the logo and the update threads all save keys.
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Update some keys, keeping the rest (best-effort; errors are ignored — losing
-/// a setting is not worth bothering the user about).
+/// a setting is not worth bothering the user about). Written to a temp file and
+/// renamed over the old one, so a crash mid-write never leaves a cut-off file.
 fn write_keys(kv: &[(&str, String)]) {
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut m = read_map();
     for (k, v) in kv {
         m.insert(k.to_string(), v.clone());
     }
     let text: String = m.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
-    let _ = std::fs::write(config_path(), text);
+    let path = config_path();
+    let tmp = path.with_extension("ini.tmp");
+    if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 /// Load the saved position, if any.

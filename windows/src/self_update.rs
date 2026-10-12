@@ -8,7 +8,7 @@
 //! WinHTTP (built into Windows) — no TLS crate, no admin rights.
 
 use std::ffi::c_void;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Networking::WinHttp::*;
@@ -68,10 +68,10 @@ pub fn install_test(file: &str) -> Result<(), String> {
 fn install(bytes: &[u8]) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let new = exe.with_extension("exe.new");
-    let old = old_path(&exe);
     std::fs::write(&new, bytes).map_err(|e| format!("write {}: {e}", new.display()))?;
-    let _ = std::fs::remove_file(&old);
-    std::fs::rename(&exe, &old).map_err(|e| format!("rename running exe: {e}"))?;
+    let old = move_aside(&exe).inspect_err(|_| {
+        let _ = std::fs::remove_file(&new);
+    })?;
     if let Err(e) = std::fs::rename(&new, &exe) {
         let _ = std::fs::rename(&old, &exe); // put the old one back
         return Err(format!("swap in new exe: {e}"));
@@ -86,8 +86,34 @@ fn install(bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn old_path(exe: &std::path::Path) -> PathBuf {
-    exe.with_extension("exe.old")
+/// Rename `exe` (possibly running) out of the way so a new file can take its
+/// place; returns where it went. `exe.old` may itself still be a running image
+/// (e.g. after a logo recolour swapped the exe), which can't be deleted or
+/// overwritten — then a numbered name is used instead.
+pub fn move_aside(exe: &Path) -> Result<PathBuf, String> {
+    let mut last = String::new();
+    for n in 0..20 {
+        let old = if n == 0 { exe.with_extension("exe.old") } else { exe.with_extension(format!("exe.old{n}")) };
+        let _ = std::fs::remove_file(&old);
+        match std::fs::rename(exe, &old) {
+            Ok(()) => return Ok(old),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    Err(format!("rename running exe: {last}"))
+}
+
+/// Delete leftovers of `move_aside` next to `exe` (those still running stay).
+pub fn remove_old_copies(exe: &Path) {
+    let (Some(dir), Some(name)) = (exe.parent(), exe.file_name().and_then(|n| n.to_str())) else { return };
+    let prefix = format!("{name}.old").to_ascii_lowercase();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().to_ascii_lowercase().starts_with(&prefix) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
 }
 
 /// Called at startup: after an update, wait for the previous process to exit
@@ -105,7 +131,7 @@ pub fn finish_update(wait_pid: Option<u32>) {
         crate::log::line(&format!("[self-update] now running v{}", crate::VERSION.trim()));
     }
     if let Ok(exe) = std::env::current_exe() {
-        let _ = std::fs::remove_file(old_path(&exe));
+        remove_old_copies(&exe);
     }
 }
 
