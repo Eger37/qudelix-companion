@@ -95,11 +95,16 @@ impl Worker {
                             Cmd::Refresh => refresh = true,
                         }
                     }
+                    let sent = pri.is_some() || vol.is_some();
                     for cmd in pri.into_iter().chain(vol) {
                         send_one(&mut session, &sink, &cmd, &set_status);
                     }
                     if refresh {
                         refresh_state(&mut session, &sink, &set_status);
+                    } else if sent {
+                        // Every click also reads the state back, so the widget
+                        // shows what the 5K really did (the label stays).
+                        read_back(&mut session);
                     }
                 }
             }
@@ -210,6 +215,17 @@ fn refresh_state(
     }
     std::thread::sleep(std::time::Duration::from_millis(1200));
     set_status("updated");
+}
+
+/// Quietly re-request the full state on the open session (after a command).
+#[cfg(feature = "ble")]
+fn read_back(session: &mut Option<crate::rfcomm::Session>) {
+    if let Some(s) = session.as_ref().filter(|s| s.is_alive()) {
+        if let Err(e) = s.request_state() {
+            crate::log::line(&format!("[worker] read-back failed: {e}"));
+            *session = None;
+        }
+    }
 }
 
 /// Find the 5K and open a session, retrying the connect (the 5K can briefly
