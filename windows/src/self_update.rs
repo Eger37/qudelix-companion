@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Networking::WinHttp::*;
 
-use crate::release::{asset_url, json_str, semver, signature_ok, split_url, RELEASE_PUBKEY};
+use crate::release::{asset_url, json_str, semver, signed_by_trusted, split_url};
 
 /// GitHub repository the releases come from (owner/name).
 pub const REPO: &str = "Eger37/qudelix-companion";
@@ -51,7 +51,7 @@ pub fn check_and_apply() -> Result<Outcome, String> {
     let sig_url = asset_url(&json, SIG_ASSET).ok_or("release is not signed (no qudelix-widget.exe.sig)")?;
     let (host, path) = split_url(&sig_url).ok_or("bad signature url")?;
     let sig = https_get(&host, &path)?;
-    if !signature_ok(&RELEASE_PUBKEY, &exe_bytes, &sig) {
+    if !signed_by_trusted(&exe_bytes, &sig) {
         return Err("bad signature on the downloaded exe — not installing".into());
     }
     crate::log::line("[self-update] signature ok");

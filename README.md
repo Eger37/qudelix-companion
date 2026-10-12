@@ -54,6 +54,9 @@ sends; the signed firmware is never modified.
   `RELEASE_PUBKEY` in `windows/src/release.rs`. A copy may live in the git-ignored `secrets/`
   (release.sh falls back to `secrets/release-ed25519.pem`). Never commit the key; back it up — installed PC
   widgets accept updates only with a signature from it.
+  A second, **backup** key (`BACKUP_PUBKEY`) is trusted too and kept offline: if the main key is
+  lost or leaked, put a new pair into `release.rs` and release once with
+  `QUDELIX_RELEASE_KEY=<backup.pem> tools/release.sh X.Y.Z` — installed widgets switch over by themselves.
 
 ## Install (Windows)
 
