@@ -178,3 +178,26 @@ pub fn load_logo_stamp() -> Option<String> {
 pub fn save_logo_stamp(stamp: Option<&str>) {
     write_keys(&[("logo_stamp", stamp.unwrap_or("").to_string())]);
 }
+
+/// Last priority + volume read from the 5K, shown right away after a restart
+/// (until the startup read replaces them).
+pub fn load_last_state() -> (Option<u8>, Option<i16>) {
+    let m = read_map();
+    (
+        m.get("last_priority").and_then(|v| v.parse().ok()).filter(|v| *v <= 2),
+        m.get("last_volume_n").and_then(|v| v.parse().ok()),
+    )
+}
+
+pub fn save_last_state(priority: Option<u8>, volume_n: Option<i16>) {
+    let mut kv = Vec::new();
+    if let Some(p) = priority {
+        kv.push(("last_priority", p.to_string()));
+    }
+    if let Some(n) = volume_n {
+        kv.push(("last_volume_n", n.to_string()));
+    }
+    if !kv.is_empty() {
+        write_keys(&kv);
+    }
+}

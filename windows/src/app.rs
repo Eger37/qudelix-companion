@@ -45,6 +45,8 @@ use crate::ui::{self, Hit};
 use crate::worker::Worker;
 
 const TIMER_REFRESH: usize = 1;
+/// One-shot: read the 5K's state once after start.
+const TIMER_STARTUP_READ: usize = 3;
 /// Hold-to-repeat for volume −/+: first repeat after REPEAT_DELAY, then every REPEAT_EVERY.
 const TIMER_REPEAT: usize = 2;
 const REPEAT_DELAY_MS: u32 = 380;
@@ -149,6 +151,7 @@ impl AppState {
                 self.volume_n = n;
                 self.volume_known = true;
             }
+            config::save_last_state(dev.priority, dev.volume_n);
             self.shown = dev;
         }
         self.status = status;
@@ -221,6 +224,7 @@ impl AppState {
         const START_WIN: usize = 33;
         const UNINSTALL: usize = 34;
         const PHONE_DEBUG: usize = 35;
+        const INSTALL: usize = 36;
         const D_AUTO: usize = 200;
         const D_FIRST: usize = 201;
         const L_FIRST: usize = 300;
@@ -286,6 +290,8 @@ impl AppState {
             add(root, PHONE_DEBUG, crate::update_server::enabled(), "Phone debug over Tailscale…");
             if crate::installer::is_installed_copy() {
                 add(root, UNINSTALL, false, "Uninstall…");
+            } else {
+                add(root, INSTALL, false, "Install for this user…");
             }
             let _ = AppendMenuW(root, MF_SEPARATOR, 0, PCWSTR::null());
             add(root, CLOSE, false, "Close widget");
@@ -335,6 +341,12 @@ impl AppState {
                 UNINSTALL => {
                     if crate::installer::uninstall(hwnd) {
                         post_quit(hwnd);
+                    }
+                    return;
+                }
+                INSTALL => {
+                    if crate::installer::install_from_menu(hwnd) {
+                        post_quit(hwnd); // the installer waits for us, then starts the installed copy
                     }
                     return;
                 }
@@ -682,6 +694,7 @@ pub fn run() -> windows::core::Result<()> {
         crate::logo::ensure(settings.logo_bg);
         let theme = ui::Theme::new(&settings);
         apply_dwm_frame(hwnd, &theme);
+        let (last_priority, last_volume) = config::load_last_state();
         let state = Box::new(AppState {
             worker,
             parent,
@@ -695,10 +708,10 @@ pub fn run() -> windows::core::Result<()> {
             pressed: None,
             status: String::new(),
             shown: crate::state::DevState::default(),
-            selected: None,
+            selected: last_priority,
             raised: false,
-            volume_n: -1200,
-            volume_known: false,
+            volume_n: last_volume.unwrap_or(-1200),
+            volume_known: last_volume.is_some(),
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
@@ -785,6 +798,9 @@ pub fn run() -> windows::core::Result<()> {
         }
         // Poll the worker's status/connection for the status line (never blocks).
         SetTimer(hwnd, TIMER_REFRESH, 700, None);
+        // Read the 5K's real state shortly after start (Bluetooth may still be
+        // coming up right after logon).
+        SetTimer(hwnd, TIMER_STARTUP_READ, 3000, None);
 
         // ── Message loop ──────────────────────────────────────────────────────
         let mut msg = MSG::default();
@@ -1047,6 +1063,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     _ => {}
                 }
                 SetTimer(hwnd, TIMER_REPEAT, REPEAT_EVERY_MS, None);
+                return LRESULT(0);
+            }
+            if !state_ptr.is_null() && wp.0 == TIMER_STARTUP_READ {
+                let _ = KillTimer(hwnd, TIMER_STARTUP_READ);
+                crate::log::line("[start] reading the 5K's state");
+                (*state_ptr).worker.refresh();
                 return LRESULT(0);
             }
             if !state_ptr.is_null() && wp.0 == TIMER_REFRESH {
