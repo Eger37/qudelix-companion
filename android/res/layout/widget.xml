@@ -7,14 +7,16 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:background="@drawable/w_bg_a"
-    android:padding="12dp">
+    android:padding="10dp">
 
+    <!-- Height: title, bar and "Playing" are fixed; the two button rows share the
+         rest (layout_weight), so everything fits from 3x2 cells up. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:paddingBottom="8dp">
+        android:paddingBottom="6dp">
         <TextView
             android:id="@+id/title"
             android:layout_width="0dp"
@@ -45,12 +47,13 @@
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_height="0dp"
+        android:layout_weight="1"
         android:orientation="horizontal">
         <Button
             android:id="@+id/btn_usb"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="match_parent"
             android:layout_weight="1"
             android:layout_marginEnd="4dp"
             android:background="@drawable/w_btn_a"
@@ -61,7 +64,7 @@
         <Button
             android:id="@+id/btn_bt1"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="match_parent"
             android:layout_weight="1"
             android:layout_marginEnd="4dp"
             android:background="@drawable/w_btn_a"
@@ -72,7 +75,7 @@
         <Button
             android:id="@+id/btn_bt2"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="@drawable/w_btn_a"
             android:text="A2DP 2"
@@ -83,14 +86,15 @@
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_height="0dp"
+        android:layout_weight="1"
         android:orientation="horizontal"
-        android:paddingTop="8dp"
+        android:paddingTop="6dp"
         android:gravity="center_vertical">
         <Button
             android:id="@+id/btn_vol_dn"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="match_parent"
             android:layout_weight="1"
             android:layout_marginEnd="4dp"
             android:background="@drawable/w_btn_a"
@@ -101,7 +105,7 @@
         <TextView
             android:id="@+id/vol"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="match_parent"
             android:layout_weight="1.4"
             android:gravity="center"
             android:text="— dB"
@@ -111,7 +115,7 @@
         <Button
             android:id="@+id/btn_vol_up"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="match_parent"
             android:layout_weight="1"
             android:layout_marginStart="4dp"
             android:background="@drawable/w_btn_a"
@@ -126,7 +130,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:paddingTop="2dp">
+        android:paddingTop="0dp">
         <TextView android:id="@+id/seg0" android:layout_width="0dp" android:layout_height="24dp"
             android:layout_weight="1" android:background="@drawable/w_seg_off_a" />
         <TextView android:id="@+id/seg1" android:layout_width="0dp" android:layout_height="24dp"
@@ -159,5 +163,7 @@
         android:layout_height="wrap_content"
         android:text="Playing: ?"
         android:textColor="@color/muted_a"
+        android:singleLine="true"
+        android:ellipsize="end"
         android:textSize="11sp" />
 </LinearLayout>
