@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Output picker icon = the PC widget's Segoe MDL2 "Speakers" glyph (U+E7F5), redrawn
+     from its measured geometry (rendered at 160 px: cabinet 100×151, stroke 10, woofer
+     ring r30 + dot r7.5 at y 91, small ring r20 at y 151), scaled 20/151 into 24×24.
+     Square cabinet corners, woofer on top, small ring below. Tinted at runtime. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:strokeColor="@color/text_a" android:strokeWidth="1.33" android:strokeLineJoin="miter"
+        android:pathData="M6.04,2.66 L17.96,2.66 L17.96,21.34 L6.04,21.34 Z" />
+    <path android:strokeColor="@color/text_a" android:strokeWidth="1.33"
+        android:pathData="M12,5.45 A3.31,3.31 0 1,1 11.99,5.45 Z" />
+    <path android:fillColor="@color/text_a"
+        android:pathData="M12,7.77 A0.99,0.99 0 1,1 11.99,7.77 Z" />
+    <path android:strokeColor="@color/text_a" android:strokeWidth="1.33"
+        android:pathData="M12,14.72 A1.99,1.99 0 1,1 11.99,14.72 Z" />
+</vector>

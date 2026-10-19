@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <inset xmlns:android="http://schemas.android.com/apk/res/android"
-    android:insetTop="9dp" android:insetBottom="9dp" android:insetLeft="1.5dp" android:insetRight="1.5dp">
+    android:insetTop="2dp" android:insetBottom="2dp" android:insetLeft="1.5dp" android:insetRight="1.5dp">
 <shape android:shape="rectangle">
         <solid android:color="@color/accent" />
         <corners android:radius="3dp" />

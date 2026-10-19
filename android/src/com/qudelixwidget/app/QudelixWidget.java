@@ -47,14 +47,38 @@ public class QudelixWidget extends AppWidgetProvider {
 
     private static RemoteViews buildViews(Context context) {
         RemoteViews v = new RemoteViews(context.getPackageName(), R.layout.widget);
-        v.setTextViewText(R.id.title, "Qudelix 5K · v" + Updater.installedVersionName(context));
+        // Two-line title like the PC widget: "QDLX ⚙" / "5K v…" (both shrink to fit).
+        v.setTextViewText(R.id.subtitle, "5K  v" + Updater.installedVersionName(context));
         Skin k = Skin.of(context);
         k.bg(v, R.id.root, k.bg, k.bgTint);
-        for (int id : new int[]{R.id.title, R.id.vol, R.id.btn_vol_dn, R.id.btn_vol_up, R.id.btn_refresh}) {
+        for (int id : new int[]{R.id.title, R.id.subtitle, R.id.vol, R.id.btn_vol_dn, R.id.btn_vol_up,
+                R.id.btn_refresh, R.id.btn_disconnect}) {
             k.text(v, context, id, k.text, k.textInt);
         }
-        for (int id : new int[]{R.id.status, R.id.playing}) k.text(v, context, id, k.muted, k.mutedInt);
-        for (int id : new int[]{R.id.btn_vol_dn, R.id.btn_vol_up, R.id.btn_refresh}) k.bg(v, id, k.btn, k.btnTint);
+        k.text(v, context, R.id.playing, k.muted, k.mutedInt);
+        k.tint(v, context, R.id.btn_settings, k.muted, k.mutedInt);
+        k.tint(v, context, R.id.btn_output, k.text, k.textInt);
+        // ⚙ → the app's settings (the same screen as the widget's reconfigure).
+        v.setOnClickPendingIntent(R.id.btn_settings, PendingIntent.getActivity(context, 800,
+                new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
+        for (int id : new int[]{R.id.btn_vol_dn, R.id.btn_vol_up, R.id.btn_output, R.id.btn_refresh, R.id.btn_disconnect}) {
+            k.bg(v, id, k.btn, k.btnTint);
+        }
+        // Unlink turns accent (and reads "Link") while this phone is unlinked.
+        boolean audioOff = Prefs.getPhoneAudioOff(context);
+        if (audioOff) {
+            k.accentBg(v, R.id.btn_phone_audio, R.drawable.w_btn_tint, R.drawable.w_btn_on);
+            v.setTextColor(R.id.btn_phone_audio, k.onAccent);
+        } else {
+            k.bg(v, R.id.btn_phone_audio, k.btn, k.btnTint);
+            k.text(v, context, R.id.btn_phone_audio, k.text, k.textInt);
+        }
+        v.setTextViewText(R.id.btn_phone_audio, audioOff ? "Link" : "Unlink");
+        // 🔊 → Android's own output picker (apps can't switch the output themselves).
+        v.setOnClickPendingIntent(R.id.btn_output, PendingIntent.getActivity(context, 700,
+                new Intent(context, OutputActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
 
         v.setOnClickPendingIntent(R.id.btn_usb, priorityPI(context, 0));
         v.setOnClickPendingIntent(R.id.btn_bt1, priorityPI(context, 1));
@@ -62,9 +86,27 @@ public class QudelixWidget extends AppWidgetProvider {
         v.setOnClickPendingIntent(R.id.btn_vol_dn, volumePI(context, -1));
         v.setOnClickPendingIntent(R.id.btn_vol_up, volumePI(context, +1));
         v.setOnClickPendingIntent(R.id.btn_refresh, refreshPI(context));
+        // Unlink = this phone drops its music + calls links to the 5K (the 5K moves on to the
+        // other source); Link brings it back.
+        Intent pa = new Intent(context, TapReceiver.class)
+                .setAction(RfcommService.ACTION_PHONE_AUDIO)
+                .putExtra(RfcommService.EXTRA_VALUE, audioOff ? RfcommService.LINK : RfcommService.UNLINK);
+        v.setOnClickPendingIntent(R.id.btn_phone_audio, PendingIntent.getBroadcast(context, 600, pa, piFlags()));
+        // Disconnect = drop every Bluetooth link to the 5K (audio + calls); then the
+        // button reads "Connect" (accent) and brings everything back (LINK does both).
+        boolean gone = Prefs.getPhoneDisconnected(context);
+        v.setTextViewText(R.id.btn_disconnect, gone ? "Connect" : "Disconnect");
+        if (gone) {
+            k.accentBg(v, R.id.btn_disconnect, R.drawable.w_btn_tint, R.drawable.w_btn_on);
+            v.setTextColor(R.id.btn_disconnect, k.onAccent);
+        }
+        Intent dc = new Intent(context, TapReceiver.class)
+                .setAction(RfcommService.ACTION_PHONE_AUDIO)
+                .putExtra(RfcommService.EXTRA_VALUE, gone ? RfcommService.LINK : RfcommService.DISCONNECT);
+        v.setOnClickPendingIntent(R.id.btn_disconnect, PendingIntent.getBroadcast(context, 601, dc, piFlags()));
         // A tap anywhere that isn't a button (background, title, status, "Playing")
         // refreshes too: any touch shows the current state.
-        for (int id : new int[]{R.id.root, R.id.title, R.id.status, R.id.playing}) {
+        for (int id : new int[]{R.id.root, R.id.title, R.id.playing}) {
             v.setOnClickPendingIntent(id, refreshPI(context));
         }
         // Tap the dB readout → volume popup (slider + hold-to-repeat; a widget
@@ -75,14 +117,19 @@ public class QudelixWidget extends AppWidgetProvider {
 
         int pri = Prefs.getPriority(context);
         int[] priIds = {R.id.btn_usb, R.id.btn_bt1, R.id.btn_bt2};
+        // Text of each priority button (Bluetooth ones: the number), and their icons.
+        int[] priText = {R.id.btn_usb, R.id.lbl_bt1, R.id.lbl_bt2};
+        int[] priIcon = {0, R.id.ic_bt1, R.id.ic_bt2};
         for (int i = 0; i < 3; i++) {
             boolean on = pri == i;
             if (on) {
                 k.accentBg(v, priIds[i], R.drawable.w_btn_tint, R.drawable.w_btn_on);
-                v.setTextColor(priIds[i], k.onAccent);
+                v.setTextColor(priText[i], k.onAccent);
+                if (priIcon[i] != 0) k.tint(v, context, priIcon[i], 0, k.onAccent);
             } else {
                 k.bg(v, priIds[i], k.btn, k.btnTint);
-                k.text(v, context, priIds[i], k.text, k.textInt);
+                k.text(v, context, priText[i], k.text, k.textInt);
+                if (priIcon[i] != 0) k.tint(v, context, priIcon[i], k.text, k.textInt);
             }
         }
 
@@ -100,9 +147,12 @@ public class QudelixWidget extends AppWidgetProvider {
                     .putExtra(RfcommService.EXTRA_VALUE, segN);
             v.setOnClickPendingIntent(SEG_IDS[i], PendingIntent.getBroadcast(context, 500 + i, seg, piFlags()));
         }
+        // Bottom line: the status while something happens (RfcommService clears it
+        // when it lets the 5K go), otherwise what is playing — same as the PC widget.
+        String status = Prefs.getStatus(context);
         String playing = Prefs.getPlaying(context);
-        v.setTextViewText(R.id.playing, "Playing: " + (playing != null ? playing : "?"));
-        v.setTextViewText(R.id.status, Prefs.getStatus(context));
+        v.setTextViewText(R.id.playing, !status.isEmpty() ? status
+                : "Playing: " + (playing != null ? playing : "?"));
         return v;
     }
 
@@ -122,9 +172,9 @@ public class QudelixWidget extends AppWidgetProvider {
      * in every theme. Tints are always (re)set because the launcher may reuse views.
      */
     private static final class Skin {
-        int bg, btn, segOff, text, muted;              // drawable / colour resources
+        int bg, btn, segOff, text, muted, panel;       // drawable / colour resources
         Integer bgTint, btnTint, segTint;              // custom theme only
-        Integer textInt, mutedInt;                     // custom theme only
+        Integer textInt, mutedInt, panelInt;           // custom theme only
         int accent, onAccent;
 
         static Skin of(Context c) {
@@ -132,23 +182,38 @@ public class QudelixWidget extends AppWidgetProvider {
             k.accent = WTheme.accent(c);
             k.onAccent = WTheme.onAccent(c);
             switch (WTheme.widgetVariant(c)) {
-                case 'l': k.res(R.drawable.w_bg_l, R.drawable.w_btn_l, R.drawable.w_seg_off_l, R.color.text_l, R.color.muted_l); break;
-                case 'd': k.res(R.drawable.w_bg_d, R.drawable.w_btn_d, R.drawable.w_seg_off_d, R.color.text_d, R.color.muted_d); break;
+                case 'l': k.res(R.drawable.w_bg_l, R.drawable.w_btn_l, R.drawable.w_seg_off_l, R.color.text_l, R.color.muted_l, R.color.panel_l); break;
+                case 'd': k.res(R.drawable.w_bg_d, R.drawable.w_btn_d, R.drawable.w_seg_off_d, R.color.text_d, R.color.muted_d, R.color.panel_d); break;
                 case 'c':
-                    k.res(R.drawable.w_bg_tint, R.drawable.w_btn_tint, R.drawable.w_seg_tint, 0, 0);
+                    k.res(R.drawable.w_bg_tint, R.drawable.w_btn_tint, R.drawable.w_seg_tint, 0, 0, 0);
                     k.bgTint = WTheme.bg(c);
                     k.btnTint = WTheme.surface(c);
                     k.segTint = WTheme.border(c);
                     k.textInt = WTheme.text(c);
                     k.mutedInt = WTheme.muted(c);
+                    k.panelInt = WTheme.surface(c);
                     break;
-                default: k.res(R.drawable.w_bg_a, R.drawable.w_btn_a, R.drawable.w_seg_off_a, R.color.text_a, R.color.muted_a);
+                default: k.res(R.drawable.w_bg_a, R.drawable.w_btn_a, R.drawable.w_seg_off_a, R.color.text_a, R.color.muted_a, R.color.panel_a);
             }
             return k;
         }
 
-        private void res(int bg, int btn, int segOff, int text, int muted) {
-            this.bg = bg; this.btn = btn; this.segOff = segOff; this.text = text; this.muted = muted;
+        private void res(int bg, int btn, int segOff, int text, int muted, int panel) {
+            this.bg = bg; this.btn = btn; this.segOff = segOff; this.text = text; this.muted = muted; this.panel = panel;
+        }
+
+        /** Image colour (white vector shapes, icons): explicit int for custom / accent;
+         *  otherwise a resource the launcher resolves, so the system theme switches live. */
+        void tint(RemoteViews v, Context c, int id, int colorRes, Integer colorInt) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (colorInt != null) {
+                    v.setColorStateList(id, "setImageTintList", android.content.res.ColorStateList.valueOf(colorInt));
+                } else {
+                    v.setColorStateList(id, "setImageTintList", colorRes);
+                }
+            } else {
+                v.setInt(id, "setColorFilter", colorInt != null ? colorInt : c.getColor(colorRes));
+            }
         }
 
         void bg(RemoteViews v, int id, int drawable, Integer tint) {

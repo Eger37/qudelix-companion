@@ -70,6 +70,14 @@ public final class Prefs {
         e.apply();
     }
 
-    public static String getStatus(Context c) { return p(c).getString("status", "tap ↻"); }
+    /** This phone's audio link to the 5K was dropped from the widget (button shows "Link"). */
+    public static boolean getPhoneAudioOff(Context c) { return p(c).getBoolean("phoneAudioOff", false); }
+    public static void setPhoneAudioOff(Context c, boolean off) { p(c).edit().putBoolean("phoneAudioOff", off).apply(); }
+    /** Everything (music + calls) was dropped by Disconnect (button shows "Connect"). */
+    public static boolean getPhoneDisconnected(Context c) { return p(c).getBoolean("phoneDisconnected", false); }
+    public static void setPhoneDisconnected(Context c, boolean d) { p(c).edit().putBoolean("phoneDisconnected", d).apply(); }
+
+    /** Status of the current action; "" = none (the widget then shows what is playing). */
+    public static String getStatus(Context c) { return p(c).getString("status", ""); }
     public static void setStatus(Context c, String s) { p(c).edit().putString("status", s).apply(); }
 }

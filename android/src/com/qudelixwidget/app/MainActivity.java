@@ -79,7 +79,7 @@ public class MainActivity extends Activity {
             "1. Grant Bluetooth below.\n" +
             "2. Pair the Qudelix-5K in Android Bluetooth settings (as usual).\n" +
             "3. Long-press your home screen → Widgets → Qudelix Widget → place it.\n\n" +
-            "USB / A2DP 1 / A2DP 2 — source priority; − / + — volume; tap the bar to jump; " +
+            "USB / Bluetooth 1 / Bluetooth 2 — source priority; − / + — volume; tap the bar to jump; " +
             "tap the dB value for a slider; ↻ — read state from the 5K.\n" +
             "The 5K has one control channel: the widget releases it 3 s after the last tap, " +
             "so the Qudelix app and the PC widget can use it too (just not at the same moment).");

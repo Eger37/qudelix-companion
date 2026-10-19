@@ -17,7 +17,8 @@ public class TapReceiver extends BroadcastReceiver {
         String action = intent.getAction();
         if (!RfcommService.ACTION_PRIORITY.equals(action) && !RfcommService.ACTION_VOLUME.equals(action)
                 && !RfcommService.ACTION_REFRESH.equals(action)
-                && !RfcommService.ACTION_VOLUME_SET.equals(action)) {
+                && !RfcommService.ACTION_VOLUME_SET.equals(action)
+                && !RfcommService.ACTION_PHONE_AUDIO.equals(action)) {
             return;
         }
         Dbg.log(context, "widget tap " + action + " value=" + intent.getIntExtra(RfcommService.EXTRA_VALUE, 0));
