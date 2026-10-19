@@ -25,6 +25,8 @@ pub mod opcode {
     pub const SET_AUDIO_IN_TOP_PRIORITY: u16 = 515; // 0x0203
     /// `ReqInitData` — pull initial device state (used in the BLE handshake).
     pub const REQ_INIT_DATA: u16 = 256; // 0x0100
+    /// `ReqDevStatus` — data `[mask]` (0x01 audio, 0x04 conn, 0x40 vol) → RspDevStatus 0x0111.
+    pub const REQ_DEV_STATUS: u16 = 272; // 0x0110
     /// `SetRuntimeStatusPeriod` — enable live status streaming (read-back seam).
     pub const SET_RUNTIME_STATUS_PERIOD: u16 = 4102; // 0x1006
     /// `SaveAll` — NOT needed; the app never sends it. Kept for reference only.
@@ -192,6 +194,12 @@ pub mod rfcomm {
     /// ReqInitData (data 00 00 04): the 5K answers with its full state.
     pub fn req_init_data() -> Vec<u8> {
         gaia_v1(VENDOR_QUDELIX, opcode::REQ_INIT_DATA, &[0x00, 0x00, 0x04])
+    }
+
+    /// ReqDevStatus for the conn part only: which hosts hold A2DP#1 / A2DP#2.
+    /// (ReqInitData's status block leaves conn out.)
+    pub fn req_conn_status() -> Vec<u8> {
+        gaia_v1(VENDOR_QUDELIX, opcode::REQ_DEV_STATUS, &[0x04])
     }
 
     /// Register for notifications (0x4001, event 0x12) — opens the control

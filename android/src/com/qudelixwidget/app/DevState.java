@@ -16,6 +16,16 @@ public final class DevState {
     public Integer volumeN;
     public Integer priority;
     public String playing;
+    /** Which A2DP slots have a host connected: {A2DP#1, A2DP#2}; null until conn status arrives. */
+    public boolean[] a2dp;
+
+    /** Where to point the priority once this host dropped its audio link: the A2DP
+     *  slot still connected, else USB (0). Null if unknown or both are still up. */
+    public Integer remainingSource() {
+        if (a2dp == null) return null;
+        if (a2dp[0] && a2dp[1]) return null;
+        return a2dp[0] ? 1 : a2dp[1] ? 2 : 0;
+    }
 
     private static final int HEADER_LEN = 8; // FF 01 flags len vendor(2) id(2)
 
@@ -55,6 +65,11 @@ public final class DevState {
             if ((m & part[0]) == 0) continue;
             if (o + part[1] > f.length) return -1;
             if (part[0] == 0x01) playing = playingFromAudio(f, o);
+            if (part[0] == 0x04) {
+                // 2 × 8 bytes, one per host: high nibble of byte 0 = connected (4 a2dpPri, 8 a2dpSec).
+                int c = (u(f[o]) >> 4) | (u(f[o + 8]) >> 4);
+                a2dp = new boolean[]{(c & 0x4) != 0, (c & 0x8) != 0};
+            }
             if (part[0] == 0x40) volumeN = (int) (short) (u(f[o]) | (u(f[o + 1]) << 8)); // int16 LE
             o += part[1];
         }
@@ -82,7 +97,8 @@ public final class DevState {
         boolean running = ((u(f[o]) >> 1) & 1) == 1;
         int active = (u(f[o + 3]) >> 2) & 0x07;
         if (!running || active == 0) return "nothing";
-        String[] srcs = {"none", "USB", "A2DP #1", "A2DP #2", "HFP #1", "HFP #2"};
+        // User-facing names: the A2DP slots are "Bluetooth 1/2", HFP = a call on them.
+        String[] srcs = {"none", "USB", "Bluetooth 1", "Bluetooth 2", "Bluetooth 1 call", "Bluetooth 2 call"};
         String src = active < srcs.length ? srcs[active] : "?";
         int codec = (u(f[o]) >> 5) | ((u(f[o + 1]) & 1) << 3);
         String[] codecs = {"", "SBC", "AAC", "aptX", "aptX HD", "aptX Adaptive", "LDAC"};

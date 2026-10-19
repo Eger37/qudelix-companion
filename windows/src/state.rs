@@ -17,6 +17,21 @@ pub struct DevState {
     pub volume_n: Option<i16>,
     pub priority: Option<u8>,
     pub playing: Option<String>,
+    /// Which A2DP slots have a host connected: [A2DP#1, A2DP#2] (conn status).
+    pub a2dp: Option<[bool; 2]>,
+    /// The two host entries of the conn status: (Bluetooth address, connected
+    /// profile bits: 1 hfpPri, 2 hfpSec, 4 a2dpPri, 8 a2dpSec).
+    pub hosts: Option<[(u64, u8); 2]>,
+}
+
+impl DevState {
+    /// Where to point the priority when the host `me` is about to leave: the A2DP
+    /// slot another host holds, else USB. None until conn status is known.
+    pub fn source_without(&self, me: u64) -> Option<u8> {
+        let hosts = self.hosts?;
+        let other = hosts.iter().filter(|(addr, _)| *addr != me).fold(0u8, |acc, (_, c)| acc | c);
+        Some(if other & 0x4 != 0 { 1 } else if other & 0x8 != 0 { 2 } else { 0 })
+    }
 }
 
 impl DevState {
@@ -74,6 +89,10 @@ impl DevState {
             let part = b.get(o..o + len)?;
             match bit {
                 0x01 => self.playing = Some(playing_from_audio(part)),
+                0x04 => {
+                    self.a2dp = Some(a2dp_from_conn(part));
+                    self.hosts = Some([host_from_conn(&part[0..8]), host_from_conn(&part[8..16])]);
+                }
                 0x40 => self.volume_n = Some(i16::from_le_bytes([part[0], part[1]])),
                 _ => {}
             }
@@ -114,7 +133,8 @@ fn playing_from_audio(a: &[u8]) -> String {
     if !running || active == 0 {
         return "nothing".to_string();
     }
-    let src = ["none", "USB", "A2DP #1", "A2DP #2", "HFP #1", "HFP #2"]
+    // User-facing names: the A2DP slots are "Bluetooth 1/2", HFP = a call on them.
+    let src = ["none", "USB", "Bluetooth 1", "Bluetooth 2", "Bluetooth 1 call", "Bluetooth 2 call"]
         .get(active as usize)
         .copied()
         .unwrap_or("?");
@@ -123,6 +143,22 @@ fn playing_from_audio(a: &[u8]) -> String {
         Some(c) if !c.is_empty() => format!("{src} ({c})"),
         _ => src.to_string(),
     }
+}
+
+/// Conn part (2 × 8 bytes, one per connected host): byte 0 = profiles (low
+/// nibble) | connected (high nibble: 1 hfpPri, 2 hfpSec, 4 a2dpPri, 8 a2dpSec),
+/// then the host address and isActive. Returns [A2DP#1 up, A2DP#2 up].
+fn a2dp_from_conn(c: &[u8]) -> [bool; 2] {
+    let connected = (c[0] >> 4) | (c[8] >> 4);
+    [connected & 0x4 != 0, connected & 0x8 != 0]
+}
+
+/// One 8-byte conn entry → (address, connected bits). Address fields LSB-first:
+/// nap 16, uap 8, lap 24 → nap:uap:lap.
+fn host_from_conn(c: &[u8]) -> (u64, u8) {
+    let nap = c[1] as u64 | (c[2] as u64) << 8;
+    let lap = c[4] as u64 | (c[5] as u64) << 8 | (c[6] as u64) << 16;
+    (nap << 32 | (c[3] as u64) << 24 | lap, c[0] >> 4)
 }
 
 /// Splits the RFCOMM byte stream into complete GAIA v1 frames.
@@ -195,7 +231,7 @@ mod tests {
         let mut st = DevState::default();
         // Official-app capture: running, AAC, active = A2DP#2; sink 06 FA LE = -1530 = -25.5 dB.
         st.apply_frame(&hex("FF 01 00 19 F0 01 A0 00 00 02 03 01 42 56 14 0C 02 06 FA 68 01 00 00 00 00 00 00 F8 F8 00 00 00 00"));
-        assert_eq!(st.playing.as_deref(), Some("A2DP #2 (AAC)"));
+        assert_eq!(st.playing.as_deref(), Some("Bluetooth 2 (AAC)"));
         assert_eq!(st.volume_n, Some(-1530));
     }
 
@@ -204,6 +240,31 @@ mod tests {
         let mut st = DevState::default();
         st.apply_frame(&hex("FF 01 00 15 F0 01 A0 00 00 06 01 40 C4 FF 68 01 00 00 00 00 00 00 F8 F8 00 00 C4 FF 00"));
         assert_eq!(st.volume_n, Some(-60)); // -1.0 dB
+    }
+
+    #[test]
+    fn conn_status_both_slots() {
+        let mut st = DevState::default();
+        assert_eq!(st.source_without(1), None);
+        // RspDevStatus conn (mask 0x04): host 1 on A2DP#1+HFP#1 (0x5_), host 2 on A2DP#2+HFP#2 (0xA_).
+        let both = "FF 01 00 12 F0 01 81 11 00 04 \
+                    5F 11 22 33 44 55 66 01  AF 77 88 99 AA BB CC 00";
+        st.apply_frame(&hex(both));
+        assert_eq!(st.a2dp, Some([true, true]));
+        // Host 1 (66:55:44:33:22:11 → nap 2211, uap 33, lap 665544) leaves: A2DP#2 stays.
+        assert_eq!(st.source_without(0x2211_3366_5544), Some(2));
+    }
+
+    #[test]
+    fn conn_hosts_and_source_without_me() {
+        // Captured 2026-10-18: phone AC:3E:B1:AC:09:BF on A2DP#1+HFP#1, this PC
+        // 88:F4:DA:75:49:27 listed with no profiles.
+        let mut st = DevState::default();
+        st.apply_frame(&hex("FF 01 00 12 F0 01 81 11 00 04 57 3E AC B1 BF 09 AC 00 07 F4 88 DA 27 49 75 00"));
+        let pc = 0x88F4_DA75_4927;
+        assert_eq!(st.hosts, Some([(0xAC3E_B1AC_09BF, 0x5), (pc, 0x0)]));
+        assert_eq!(st.source_without(pc), Some(1)); // the phone's slot
+        assert_eq!(st.source_without(0xAC3E_B1AC_09BF), Some(0)); // nobody else → USB
     }
 
     #[test]

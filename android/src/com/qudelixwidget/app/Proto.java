@@ -18,6 +18,8 @@ public final class Proto {
     public static final byte[] REGISTER      = b(0xFF, 0x01, 0x00, 0x01, 0x00, 0x0A, 0x40, 0x01, 0x12);
     /** SetRuntimeStatusPeriod = 0. NEVER send the "enable" variant (18 03 E8): it wedges the 5K. */
     public static final byte[] STOP_STREAM   = b(0xFF, 0x01, 0x00, 0x03, 0xF0, 0x01, 0x10, 0x06, 0x00, 0x00, 0x00);
+    /** ReqDevStatus (0x0110), conn part only: which hosts hold A2DP#1 / A2DP#2 (ReqInitData leaves it out). */
+    public static final byte[] REQ_CONN_STATUS = b(0xFF, 0x01, 0x00, 0x01, 0xF0, 0x01, 0x01, 0x10, 0x04);
 
     // Volume: n = dB * 60, signed. Official app range -60..0 dB (step: Prefs.getStepN).
     public static final int VOL_MIN_N = -3600;

@@ -28,12 +28,21 @@ public class DevStateTest {
 
         s = new DevState();
         s.apply(h("FF 01 00 19 F0 01 A0 00 00 02 03 01 42 56 14 0C 02 06 FA 68 01 00 00 00 00 00 00 F8 F8 00 00 00 00"));
-        check("A2DP #2 (AAC)".equals(s.playing), "playing source + codec: " + s.playing);
+        check("Bluetooth 2 (AAC)".equals(s.playing), "playing source + codec: " + s.playing);
         check(s.volumeN == -1530, "volume -25.5 dB (int16 LE): " + s.volumeN);
         s.apply(h("FF 01 00 15 F0 01 A0 00 00 06 01 40 C4 FF 68 01 00 00 00 00 00 00 F8 F8 00 00 C4 FF 00"));
         check(s.volumeN == -60, "volume notification -1 dB");
         s.apply(h("FF 01 00 19 F0 01 A0 00 00 02 03 01 00 56 00 08 02 C4 FF 68 01 00 00 00 00 00 00 F8 F8 00 00 C4 FF"));
         check("nothing".equals(s.playing), "not running → nothing playing");
+
+        s = new DevState();
+        check(s.remainingSource() == null, "conn unknown → no target");
+        s.apply(h("FF 01 00 12 F0 01 81 11 00 04 5F 11 22 33 44 55 66 01 AF 77 88 99 AA BB CC 00"));
+        check(s.remainingSource() == null, "both A2DP up → no target");
+        s.apply(h("FF 01 00 12 F0 01 81 11 00 04 00 00 00 00 00 00 00 00 AF 77 88 99 AA BB CC 01"));
+        check(s.remainingSource() == 2, "only A2DP 2 left → priority 2");
+        s.apply(h("FF 01 00 12 F0 01 81 11 00 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"));
+        check(s.remainingSource() == 0, "no Bluetooth host left → USB");
 
         DevState.Splitter sp = new DevState.Splitter();
         byte[] x = h("FF 01 00 01 F0 01 02 03 02 FF 01 00 02 00 0A C0");

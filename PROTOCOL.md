@@ -25,6 +25,11 @@ Opcodes used here:
 - **Priority ≠ playing source.** Priority = sys-config `audio_in_top_priority`; what is playing now = audio-status
   `running` + `active_in_source` (0 none,1 USB,2 A2DP#1,3 A2DP#2,4 HFP#1,5 HFP#2 — a different enum).
   Full layouts, offsets and verified samples: `captures/state-decoding-notes.md`; decoder: `windows/src/state.rs`.
+- **No "drop host X" command.** The Chrome app v4.0 opcode table has only `Disconnect = 263` (ends the
+  control session) and `SysPairedDeviceReset = 4099` (forgets all pairings). To make the 5K move to its
+  other source, the host drops its own A2DP link (Windows: KSPROPSETID_BtAudio one-shot disconnect on the
+  endpoint's KS filter; Android: hidden `BluetoothA2dp.disconnect`, may be blocked), then reads the conn
+  status (`ReqDevStatus` mask 0x04: `FF 01 00 01 F0 01 01 10 04`) and sets the priority to the slot left.
 - `SaveAll (0x1007)`: **NOT needed** — the app never emits it; priority & volume apply live (5K persists in NVM). Do not send it.
 
 ## Transports
