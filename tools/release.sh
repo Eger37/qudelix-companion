@@ -41,6 +41,8 @@ dex=$(python3 -I -c "import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).geti
 (( dex > 40000 )) || { echo "classes.dex is only $dex bytes — refusing to release"; false; }
 (cd android && ./test.sh)
 (cd windows && cargo test --locked -q && cargo build --locked --release --target x86_64-pc-windows-gnu --features ble)
+# Widget layout tests need the Win32 build; the test .exe runs through WSL interop.
+(cd windows && cargo test --locked -q --release --target x86_64-pc-windows-gnu --features ble ui::)
 mkdir -p dist
 rm -f dist/*.sig dist/SHA256SUMS
 cp android/build/qudelix-widget.apk windows/target/x86_64-pc-windows-gnu/release/qudelix-widget.exe dist/
