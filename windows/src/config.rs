@@ -83,6 +83,15 @@ pub fn save_device(name: Option<&str>) {
     write_keys(&[("device", name.unwrap_or("").to_string())]);
 }
 
+/// Sound output (endpoint id) the PC switches to when it unlinks / disconnects
+/// from the 5K; None = automatic (first other active output).
+pub fn load_fallback_output() -> Option<String> {
+    read_map().get("fallback_output").filter(|v| !v.is_empty()).cloned()
+}
+pub fn save_fallback_output(id: Option<&str>) {
+    write_keys(&[("fallback_output", id.unwrap_or("").to_string())]);
+}
+
 /// A theme is background AND accent together. Light = red & grey, dark = red &
 /// black, System = light/dark like Windows (red), WindowsColors = like Windows
 /// incl. its accent colour, Custom = user-picked background + accent.

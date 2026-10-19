@@ -19,6 +19,8 @@ ble = [
     "windows/Devices_Bluetooth_GenericAttributeProfile",
     "windows/Devices_Enumeration",
     "windows/Storage_Streams",
+    # Dropping / restoring this PC's Bluetooth audio link (btaudio.rs).
+    "windows/Win32_Media_KernelStreaming",
 ]
 
 [dependencies]
@@ -56,6 +58,10 @@ features = [
     "Win32_Networking_WinSock",
     "Win32_Networking_WinHttp",
     "Win32_Storage_FileSystem",
+    # Sound output picker (audio_out.rs); also used by btaudio.rs.
+    "Win32_Media_Audio",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_UI_Shell_PropertiesSystem",
 ]
 
 [profile.release]

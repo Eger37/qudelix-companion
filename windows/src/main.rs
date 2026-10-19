@@ -20,8 +20,12 @@ mod state;
 
 #[cfg(windows)]
 mod app;
+#[cfg(windows)]
+mod audio_out;
 #[cfg(all(windows, feature = "ble"))]
 mod ble;
+#[cfg(all(windows, feature = "ble"))]
+mod btaudio;
 #[cfg(windows)]
 mod config;
 #[cfg(windows)]
@@ -89,6 +93,26 @@ fn main() {
     }
     if args.iter().any(|a| a == "--refresh") {
         app::forward_to_widget(app::WM_APP_CLI_REFRESH, 0);
+        return;
+    }
+    // Read-only: list audio endpoints and how they map to the 5K's KS filters (log).
+    #[cfg(feature = "ble")]
+    if args.iter().any(|a| a == "--bt-endpoints") {
+        worker::init_com();
+        match ble::find_qudelix() {
+            Ok((name, addr)) => btaudio::diagnose(&btaudio::BtDevice { name, addr }),
+            Err(e) => log::line(&format!("[bt-diag] {e}")),
+        }
+        return;
+    }
+    // Bring the 5K's music and headset (microphone) back on this PC.
+    #[cfg(feature = "ble")]
+    if args.iter().any(|a| a == "--bt-restore") {
+        worker::init_com();
+        if let Ok((name, addr)) = ble::find_qudelix() {
+            let r = btaudio::restore(&btaudio::BtDevice { name, addr });
+            log::line(&format!("[bt-restore] (music, calls) = {r:?}"));
+        }
         return;
     }
     #[cfg(feature = "ble")]

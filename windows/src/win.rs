@@ -20,3 +20,15 @@ pub fn app_dir() -> PathBuf {
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
+
+/// Open a URL or URI (e.g. `ms-settings:bluetooth`) with its default handler.
+#[cfg(windows)]
+pub fn open_url(url: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let w = wide(url);
+    unsafe {
+        ShellExecuteW(None, windows::core::w!("open"), PCWSTR(w.as_ptr()), None, None, SW_SHOWNORMAL);
+    }
+}

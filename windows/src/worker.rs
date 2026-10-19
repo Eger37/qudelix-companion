@@ -29,6 +29,22 @@ enum Cmd {
     Volume(i16),
     /// Connect, read volume / priority / playing source, release.
     Refresh,
+    /// Change this PC's Bluetooth links to the 5K. On a drop, the PC's sound goes
+    /// to the fallback output and the 5K's priority to the source that is left.
+    PcAudio(PcLink),
+}
+
+/// What the PcAudio buttons ask for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PcLink {
+    /// Drop music and calls (A2DP + HFP); pairing and radio link stay.
+    Unlink,
+    /// Unlink + drop the radio link: the full Bluetooth disconnect.
+    Disconnect,
+    /// Bring music and calls back (after Unlink), and the PC's sound with them.
+    Link,
+    /// The same after Disconnect.
+    Connect,
 }
 
 /// Handle the UI keeps; sending never blocks.
@@ -37,6 +53,10 @@ pub struct Worker {
     tx: Option<Sender<Cmd>>,
     status: Arc<Mutex<String>>,
     dev: Arc<Mutex<crate::state::DevState>>,
+    /// What of the 5K is live on this PC (Windows' view), checked every
+    /// IDLE_RELEASE: bit 0 known, bit 1 music, bit 2 calls, bit 3 radio link.
+    /// Drives the Unlink/Link and Disconnect/Connect labels.
+    pc_linked: Arc<std::sync::atomic::AtomicU8>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -69,6 +89,11 @@ impl Worker {
         let dev = Arc::new(Mutex::new(crate::state::DevState::default()));
         let st = status.clone();
         let dv = dev.clone();
+        #[cfg(feature = "ble")]
+        let dev_read = dev.clone();
+        let pc_linked = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        #[cfg(feature = "ble")]
+        let linked = pc_linked.clone();
         let thread = thread::spawn(move || {
             let set_status = |s: &str| {
                 if let Ok(mut g) = st.lock() {
@@ -90,6 +115,20 @@ impl Worker {
                         d.apply_frame(f);
                     }
                 });
+                // The 5K as a Windows Bluetooth device (looked up once, retried if missing).
+                let mut bt: Option<crate::btaudio::BtDevice> = None;
+                let check_linked = |bt: &mut Option<crate::btaudio::BtDevice>| {
+                    if bt.is_none() {
+                        *bt = crate::ble::find_qudelix().ok().map(|(name, addr)| crate::btaudio::BtDevice { name, addr });
+                    }
+                    if let Some(d) = bt.as_ref() {
+                        let (music, calls) = crate::btaudio::live(d);
+                        let acl = crate::btaudio::acl_connected(d.addr);
+                        let v = 1 | (music as u8) << 1 | (calls as u8) << 2 | (acl as u8) << 3;
+                        linked.store(v, std::sync::atomic::Ordering::Relaxed);
+                    }
+                };
+                check_linked(&mut bt);
                 loop {
                     let first = match rx.recv_timeout(IDLE_RELEASE) {
                         Ok(c) => c,
@@ -98,6 +137,7 @@ impl Worker {
                                 crate::log::line("[worker] idle — released the 5K for other hosts");
                                 set_status("Ready");
                             }
+                            check_linked(&mut bt);
                             continue;
                         }
                         Err(RecvTimeoutError::Disconnected) => {
@@ -112,12 +152,21 @@ impl Worker {
                     let mut pri = None;
                     let mut vol = None;
                     let mut refresh = false;
+                    let mut pc_audio = None;
                     for c in std::iter::once(first).chain(rx.try_iter()) {
                         match c {
                             Cmd::Priority(_) => pri = Some(c),
                             Cmd::Volume(_) => vol = Some(c),
                             Cmd::Refresh => refresh = true,
+                            Cmd::PcAudio(m) => pc_audio = Some(m),
                         }
+                    }
+                    if let Some(m) = pc_audio {
+                        // Unknown while it runs: the UI keeps its optimistic label.
+                        linked.store(0, std::sync::atomic::Ordering::Relaxed);
+                        set_pc_audio(&mut session, &sink, &dev_read, m, &set_status);
+                        check_linked(&mut bt);
+                        continue;
                     }
                     let sent = pri.is_some() || vol.is_some();
                     for cmd in pri.into_iter().chain(vol) {
@@ -136,7 +185,7 @@ impl Worker {
             while rx.recv().is_ok() {}
         });
 
-        Worker { tx: Some(tx), status, dev, thread: Some(thread) }
+        Worker { tx: Some(tx), status, dev, pc_linked, thread: Some(thread) }
     }
 
     fn send(&self, c: Cmd) {
@@ -153,6 +202,13 @@ impl Worker {
         self.send(Cmd::Volume(n));
     }
 
+    /// Show a note on the status line right away (from the UI thread).
+    pub fn note(&self, s: &str) {
+        if let Ok(mut g) = self.status.lock() {
+            *g = s.to_string();
+        }
+    }
+
     /// Show a note on the status line (e.g. from the update checker thread).
     pub fn status_arc(&self) -> Arc<Mutex<String>> {
         self.status.clone()
@@ -160,6 +216,17 @@ impl Worker {
 
     pub fn refresh(&self) {
         self.send(Cmd::Refresh);
+    }
+
+    /// Unlink / disconnect / link this PC's Bluetooth links to the 5K.
+    pub fn pc_audio(&self, m: PcLink) {
+        self.send(Cmd::PcAudio(m));
+    }
+
+    /// What of the 5K is live on this PC: (music, calls, radio link); None = not known yet.
+    pub fn pc_live(&self) -> Option<(bool, bool, bool)> {
+        let v = self.pc_linked.load(std::sync::atomic::Ordering::Relaxed);
+        (v & 1 != 0).then_some((v & 2 != 0, v & 4 != 0, v & 8 != 0))
     }
 
     /// Latest state read back from the 5K (empty fields = not known yet).
@@ -180,9 +247,14 @@ fn send_one(
     cmd: &Cmd,
     set_status: &dyn Fn(&str),
 ) {
-    set_status("sending…");
+    // Volume shows no status: the dB readout already shows the result.
+    let quiet = matches!(cmd, Cmd::Volume(_));
+    if !quiet {
+        set_status("sending…");
+    }
     let Some(s) = ensure_session(session, sink, set_status) else { return };
     match s.command(&command_frame(cmd)) {
+        Ok(()) if quiet => {}
         Ok(()) => set_status(&command_label(cmd)),
         Err(e) => {
             crate::log::line(&format!("[worker] cmd failed: {e}"));
@@ -240,6 +312,193 @@ fn refresh_state(
     }
     std::thread::sleep(std::time::Duration::from_millis(1200));
     set_status("updated");
+}
+
+/// Change this PC's Bluetooth links to the 5K. Dropping: move the PC's sound to
+/// the fallback output first (so nothing plays into a dead device), release the
+/// control session, disconnect, give the 5K a moment, then read which A2DP slot
+/// is left and point the priority there (USB if none) — so the other source
+/// keeps the 5K even once this PC comes back. Link: reconnect, then send the
+/// PC's sound back to the 5K once its output shows up.
+#[cfg(feature = "ble")]
+fn set_pc_audio(
+    session: &mut Option<crate::rfcomm::Session>,
+    sink: &crate::rfcomm::FrameSink,
+    dev: &Arc<Mutex<crate::state::DevState>>,
+    mode: PcLink,
+    set_status: &dyn Fn(&str),
+) {
+    crate::log::line(&format!("[pc-audio] {mode:?}"));
+    set_status(match mode {
+        PcLink::Unlink => "unlinking PC…",
+        PcLink::Link => "linking PC…",
+        PcLink::Disconnect => "disconnecting PC…",
+        PcLink::Connect => "connecting PC…",
+    });
+    *session = None;
+    let bt = match crate::ble::find_qudelix() {
+        Ok((name, addr)) => crate::btaudio::BtDevice { name, addr },
+        Err(e) => {
+            crate::log::line(&format!("[pc-audio] {e}"));
+            set_status("5K not paired");
+            return;
+        }
+    };
+    if matches!(mode, PcLink::Link | PcLink::Connect) {
+        set_status(&link_pc(&bt, mode == PcLink::Connect));
+        return;
+    }
+    output_away_from(&bt);
+    let full = mode == PcLink::Disconnect;
+    // Point the 5K's priority away from this PC FIRST: asking the 5K afterwards
+    // would open the control channel and bring the Bluetooth link back.
+    let moved = point_priority_away(session, sink, dev, set_status);
+    *session = None;
+    if let Err(e) = crate::btaudio::set_connected(&bt, false) {
+        crate::log::line(&format!("[pc-audio] KS disconnect: {e}"));
+    }
+    // The KS one-shot is ignored by some drivers (Intel Smart Sound offload says OK
+    // and stays connected): check Windows' view, else switch the MUSIC service off.
+    // Never the calls service — Windows may not bring the microphone back (see
+    // btaudio::restore). Calls go with the radio link (Disconnect).
+    let music_gone = |bt: &crate::btaudio::BtDevice| !crate::btaudio::live(bt).0;
+    if !wait_for(|| music_gone(&bt), 3) {
+        crate::log::line("[pc-audio] music still connected — switching the music service off");
+        crate::btaudio::set_service(bt.addr, crate::btaudio::Service::Music, false);
+        if !wait_for(|| music_gone(&bt), 8) {
+            crate::log::line("[pc-audio] Windows kept the 5K's music");
+            set_status(if full { "couldn't disconnect PC" } else { "couldn't unlink PC" });
+            return;
+        }
+    }
+    if full {
+        // The radio link itself can't be dropped safely from here (the raw
+        // disconnect IOCTL crashed the Intel audio DSP — see btaudio.rs): hand over
+        // to Windows' own Disconnect button in Bluetooth settings.
+        crate::win::open_url("ms-settings:bluetooth");
+        set_status("music off · press Disconnect in Bluetooth settings");
+        return;
+    }
+    let done = "PC unlinked";
+    set_status(&match moved {
+        Some(to) => format!("{done} · {to}"),
+        None => done.to_string(),
+    });
+}
+
+/// Ask the 5K which hosts it holds and set its priority to the source that stays
+/// once this PC leaves (the other host's A2DP slot, else USB). Returns the
+/// priority label if it changed.
+#[cfg(feature = "ble")]
+fn point_priority_away(
+    session: &mut Option<crate::rfcomm::Session>,
+    sink: &crate::rfcomm::FrameSink,
+    dev: &Arc<Mutex<crate::state::DevState>>,
+    set_status: &dyn Fn(&str),
+) -> Option<String> {
+    let me = crate::btaudio::local_address()?;
+    if let Ok(mut d) = dev.lock() {
+        d.hosts = None; // only trust a fresh reply
+    }
+    let s = ensure_session(session, sink, set_status)?;
+    s.command(&proto::rfcomm::req_conn_status()).ok()?;
+    let fresh = || dev.lock().map(|d| d.hosts.is_some()).unwrap_or(false);
+    wait_ms(fresh, 1500);
+    let (target, current) = dev.lock().map(|d| (d.source_without(me), d.priority)).unwrap_or((None, None));
+    crate::log::line(&format!("[pc-audio] source without this PC {target:?}, priority {current:?}"));
+    match target {
+        Some(v) if Some(v) != current => {
+            let cmd = Cmd::Priority(v);
+            send_one(session, sink, &cmd, set_status);
+            Some(command_label(&cmd))
+        }
+        _ => None,
+    }
+}
+
+/// Poll `ok` every 50 ms for up to `ms` milliseconds.
+#[cfg(feature = "ble")]
+fn wait_ms(ok: impl Fn() -> bool, ms: u64) -> bool {
+    let end = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    while !ok() && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    ok()
+}
+
+/// If the PC's default output is the 5K, switch it to the fallback output
+/// (picked in the speaker menu; else the first other active output).
+#[cfg(feature = "ble")]
+fn output_away_from(bt: &crate::btaudio::BtDevice) {
+    let ours = crate::btaudio::playback_endpoints(bt);
+    let Ok(outs) = crate::audio_out::list() else { return };
+    if !outs.iter().any(|o| o.default && ours.contains(&o.id)) {
+        return; // the PC isn't playing to the 5K — leave its output alone
+    }
+    let others: Vec<_> = outs.iter().filter(|o| !ours.contains(&o.id)).collect();
+    let want = crate::config::load_fallback_output();
+    let Some(to) = others.iter().find(|o| Some(&o.id) == want.as_ref()).or(others.first()) else {
+        crate::log::line("[output] no other output to fall back to");
+        return;
+    };
+    crate::log::line(&format!("[output] fallback → {}", to.name));
+    if let Err(e) = crate::audio_out::set_default(&to.id) {
+        crate::log::line(&format!("[output] fallback failed: {e}"));
+    }
+}
+
+/// Link (music) / Connect (music + calls): bring the PC's audio back to the 5K and
+/// make it the default output.
+/// 1. switch the service(s) back on (Unlink/Disconnect may have switched them off)
+///    and send the one-shot KS reconnect; 2. if the music output isn't back, cycle
+///    the A2DP service (Windows reinstalls + connects it); 3. if still nothing,
+///    open Windows' Bluetooth settings so the user can press Connect there.
+/// Returns the status line.
+#[cfg(feature = "ble")]
+fn link_pc(bt: &crate::btaudio::BtDevice, connect: bool) -> String {
+    // Both bring music AND calls (the 5K's microphone) back — Unlink and Disconnect
+    // both drop both; only the wording differs.
+    let label = if connect { "PC connected" } else { "PC linked" };
+    let (music, calls) = crate::btaudio::restore(bt);
+    crate::log::line(&format!("[pc-audio] restored: music={music} calls={calls}"));
+    if !music {
+        crate::log::line("[pc-audio] music not back — opening Bluetooth settings");
+        crate::win::open_url("ms-settings:bluetooth");
+        return "press Connect for the 5K in Bluetooth settings".to_string();
+    }
+    let label = if calls { label.to_string() } else { format!("{label} · mic missing") };
+    output_back_to(bt, 3, &label).unwrap_or(label)
+}
+
+/// Poll `ok` once a second for up to `secs` seconds.
+#[cfg(feature = "ble")]
+fn wait_for(ok: impl Fn() -> bool, secs: u32) -> bool {
+    for _ in 0..secs {
+        if ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+    }
+    ok()
+}
+
+/// Wait up to `secs` for the 5K's music output to be live, then make it the
+/// PC's default output. Returns the status line once linked, None if it never came.
+#[cfg(feature = "ble")]
+fn output_back_to(bt: &crate::btaudio::BtDevice, secs: u32, label: &str) -> Option<String> {
+    for _ in 0..secs {
+        if let Some(id) = crate::btaudio::playback_endpoints(bt).into_iter().next() {
+            return Some(match crate::audio_out::set_default(&id) {
+                Ok(()) => format!("{label} · sound → 5K"),
+                Err(e) => {
+                    crate::log::line(&format!("[output] back to 5K failed: {e}"));
+                    label.to_string()
+                }
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+    }
+    None
 }
 
 /// Quietly re-request the full state on the open session (after a command).
@@ -376,6 +635,7 @@ fn command_frame(cmd: &Cmd) -> Vec<u8> {
         Cmd::Priority(v) => proto::rfcomm::priority(v),
         Cmd::Volume(n) => proto::rfcomm::volume(n),
         Cmd::Refresh => unreachable!("Refresh is handled by refresh_state"),
+        Cmd::PcAudio(_) => unreachable!("PcAudio is handled by set_pc_audio"),
     }
 }
 
@@ -385,10 +645,11 @@ fn command_label(cmd: &Cmd) -> String {
     match *cmd {
         Cmd::Priority(v) => format!(
             "→ {}",
-            ["USB DAC", "A2DP #1", "A2DP #2"].get(v as usize).copied().unwrap_or("?")
+            ["USB", "Bluetooth 1", "Bluetooth 2"].get(v as usize).copied().unwrap_or("?")
         ),
         Cmd::Volume(n) => format!("{:+.0} dB", proto::n_to_db(n)),
         Cmd::Refresh => "updated".to_string(),
+        Cmd::PcAudio(m) => format!("{m:?}"),
     }
 }
 

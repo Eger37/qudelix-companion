@@ -148,6 +148,12 @@ impl Ble {
 /// Get the 5K's Bluetooth address from the paired *classic* device list (it is
 /// paired as audio, so this is where Windows knows it — not the LE selector).
 pub fn find_qudelix_address() -> QResult<u64> {
+    find_qudelix().map(|(_, addr)| addr)
+}
+
+/// The 5K's (Bluetooth name, address): Windows names its audio outputs after the
+/// name, e.g. "Headphones (Qudelix-5K)".
+pub fn find_qudelix() -> QResult<(String, u64)> {
     // A device picked in the settings menu wins; otherwise the first paired
     // device whose name starts with "Qudelix-5K".
     let chosen = crate::config::load_device();
@@ -161,7 +167,7 @@ pub fn find_qudelix_address() -> QResult<u64> {
         None => devices.iter().find(|(name, _)| name.starts_with(proto::ble::NAME_PREFIX)),
     };
     match (hit, chosen) {
-        (Some((_, addr)), _) => Ok(*addr),
+        (Some((name, addr)), _) => Ok((name.clone(), *addr)),
         (None, Some(want)) => Err(format!("{want:?} not found among paired Bluetooth devices").into()),
         (None, None) => Err("Qudelix-5K not found among paired Bluetooth devices".into()),
     }

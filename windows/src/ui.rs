@@ -18,7 +18,7 @@ use crate::proto;
 
 /// Logical (96-dpi) size of the gadget.
 pub const WIDTH: i32 = 232;
-pub const HEIGHT: i32 = 184;
+pub const HEIGHT: i32 = 162;
 
 /// Clickable elements.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -31,6 +31,12 @@ pub enum Hit {
     Settings,
     /// The volume bar: click or drag to set the level.
     Bar,
+    /// Unlink (music off) / Link (all back) this PC's Bluetooth links to the 5K.
+    PcAudio,
+    /// Drop this PC's whole Bluetooth connection to the 5K (music + calls).
+    Disconnect,
+    /// Pick the PC's sound output device (menu).
+    Output,
 }
 
 /// Colours as 0xAARRGGBB.
@@ -164,43 +170,62 @@ fn colorref(argb: u32) -> COLORREF {
 
 // ── Layout (logical px) ──────────────────────────────────────────────────────────
 
+// Same layout as the phone widget (android/res/layout/widget.xml): "QDLX ⚙ ✕" over
+// "5K v…" (✕ is PC only), the X-cut button block top right, then priority,
+// volume, the 12-segment bar, and one bottom line (status, else "Playing").
+
 const PAD: i32 = 12;
-const ICON: i32 = 24;
-const SEG_Y: i32 = 58;
-const SEG_H: i32 = 34;
-const VOL_Y: i32 = 104;
-const VOL_BTN: i32 = 36;
+const TOP: i32 = 8;
+const HEADER_H: i32 = 48;
+const LINE_H: i32 = HEADER_H / 2;
+const ICON: i32 = 18;
+const ROW_H: i32 = 26;
+const SEG_Y: i32 = TOP + HEADER_H + 6;
+const VOL_Y: i32 = SEG_Y + ROW_H + 5;
+const VOL_BTN_W: i32 = 60;
+const BAR_Y: i32 = VOL_Y + ROW_H + 6;
+const BAR_H: i32 = 10;
+const BAR_SEGS: i32 = 12;
+const FOOT_Y: i32 = BAR_Y + BAR_H + 4;
+const FOOT_H: i32 = 16;
+/// Left edge of the X-cut block.
+const XB_LEFT: i32 = 98;
 
 fn r(x: i32, y: i32, w: i32, h: i32) -> RECT {
     RECT { left: x, top: y, right: x + w, bottom: y + h }
 }
 
-fn close_rect() -> RECT {
-    r(WIDTH - PAD - ICON + 4, 8, ICON, ICON)
+/// The 2×2 buttons top right: Output ↻ / Unlink Disconnect.
+const GRID: [Hit; 4] = [Hit::Output, Hit::Refresh, Hit::PcAudio, Hit::Disconnect];
+const GAP: i32 = 3;
+
+fn grid_rect(hit: Hit) -> RECT {
+    let i = GRID.iter().position(|&h| h == hit).unwrap_or(0) as i32;
+    let (col, row) = (i % 2, i / 2);
+    let w = (WIDTH - PAD - XB_LEFT - GAP) / 2;
+    let h = (HEADER_H - GAP) / 2;
+    r(XB_LEFT + col * (w + GAP), TOP + row * (h + GAP), w, h)
 }
-fn refresh_rect() -> RECT {
-    r(WIDTH - PAD - 2 * ICON + 2, 8, ICON, ICON)
-}
+
 fn settings_rect() -> RECT {
-    r(WIDTH - PAD - 3 * ICON, 8, ICON, ICON)
+    r(PAD + 40, TOP + (LINE_H - ICON) / 2, ICON, ICON)
 }
-fn seg_rect() -> RECT {
-    r(PAD, SEG_Y, WIDTH - 2 * PAD, SEG_H)
+fn close_rect() -> RECT {
+    r(PAD + 40 + ICON + 2, TOP + (LINE_H - ICON) / 2, ICON, ICON)
 }
 fn seg_item(i: i32) -> RECT {
-    let s = seg_rect();
-    let w = (s.right - s.left) / 3;
-    r(s.left + i * w, s.top, if i == 2 { s.right - s.left - 2 * w } else { w }, SEG_H)
+    let w = (WIDTH - 2 * PAD - 2 * 4) / 3;
+    r(PAD + i * (w + 4), SEG_Y, w, ROW_H)
 }
 fn vol_down_rect() -> RECT {
-    r(PAD, VOL_Y, VOL_BTN, VOL_BTN)
+    r(PAD, VOL_Y, VOL_BTN_W, ROW_H)
 }
 fn vol_up_rect() -> RECT {
-    r(WIDTH - PAD - VOL_BTN, VOL_Y, VOL_BTN, VOL_BTN)
+    r(WIDTH - PAD - VOL_BTN_W, VOL_Y, VOL_BTN_W, ROW_H)
 }
 
 fn bar_rect() -> RECT {
-    r(PAD + VOL_BTN + 12, VOL_Y + 30, WIDTH - 2 * (PAD + VOL_BTN + 12), 4)
+    r(PAD, BAR_Y, WIDTH - 2 * PAD, BAR_H)
 }
 
 /// Volume (n = dB*60, 0.5-dB steps) for a pointer at client x (physical px) on the bar.
@@ -221,11 +246,11 @@ pub fn hit_test(x: i32, y: i32, scale: f32) -> Option<Hit> {
     if inside(&close_rect(), x, y) {
         return Some(Hit::Close);
     }
-    if inside(&refresh_rect(), x, y) {
-        return Some(Hit::Refresh);
-    }
     if inside(&settings_rect(), x, y) {
         return Some(Hit::Settings);
+    }
+    if let Some(&hit) = GRID.iter().find(|&&h| inside(&grid_rect(h), x, y)) {
+        return Some(hit);
     }
     for i in 0..3 {
         if inside(&seg_item(i), x, y) {
@@ -238,9 +263,9 @@ pub fn hit_test(x: i32, y: i32, scale: f32) -> Option<Hit> {
     if inside(&vol_up_rect(), x, y) {
         return Some(Hit::VolUp);
     }
-    // Generous vertical grab area around the 4-px bar.
+    // A little vertical grab area around the bar.
     let b = bar_rect();
-    if inside(&RECT { top: b.top - 8, bottom: b.bottom + 8, ..b }, x, y) {
+    if inside(&RECT { top: b.top - 3, bottom: b.bottom + 3, ..b }, x, y) {
         return Some(Hit::Bar);
     }
     None
@@ -301,8 +326,8 @@ impl Drop for Fonts {
 const G_REFRESH: &str = "\u{E72C}";
 const G_SETTINGS: &str = "\u{E713}";
 const G_CLOSE: &str = "\u{E711}";
-const G_MINUS: &str = "\u{E738}";
-const G_PLUS: &str = "\u{E710}";
+const G_SPEAKERS: &str = "\u{E7F5}";
+const G_BLUETOOTH: &str = "\u{E702}";
 
 // ── Painting ─────────────────────────────────────────────────────────────────────
 
@@ -310,10 +335,16 @@ const G_PLUS: &str = "\u{E710}";
 pub struct View<'a> {
     pub version: &'a str,
     pub status: &'a str,
+    /// Show `status` in the bottom line instead of "Playing" (it just changed).
+    pub show_status: bool,
     pub priority: Option<u8>,
     pub volume_n: i16,
     pub volume_known: bool,
     pub playing: Option<&'a str>,
+    /// This PC's audio link was dropped by the PcAudio button.
+    pub pc_audio_off: bool,
+    /// Music and calls both down: Disconnect reads "Connect".
+    pub pc_disconnected: bool,
     pub hover: Option<Hit>,
     pub pressed: Option<Hit>,
 }
@@ -355,8 +386,8 @@ pub fn paint(hdc: HDC, client: RECT, scale: f32, t: &Theme, fonts: &Fonts, v: &V
         };
         let state = |hit: Hit| -> (bool, bool) { (v.hover == Some(hit), v.pressed == Some(hit)) };
 
-        // Header icon buttons: soft circle on hover/press.
-        for (hit, rc) in [(Hit::Settings, settings_rect()), (Hit::Refresh, refresh_rect()), (Hit::Close, close_rect())] {
+        // ⚙ / ✕: soft circle on hover/press.
+        for (hit, rc) in [(Hit::Settings, settings_rect()), (Hit::Close, close_rect())] {
             let (hov, prs) = state(hit);
             if hov || prs {
                 let (x, y, w, h) = s(rc);
@@ -364,53 +395,38 @@ pub fn paint(hdc: HDC, client: RECT, scale: f32, t: &Theme, fonts: &Fonts, v: &V
             }
         }
 
-        // Segmented priority control.
-        let (x, y, w, h) = s(seg_rect());
-        fill_round(g, x, y, w, h, 9.0 * scale, t.surface);
-        if !t.dark {
-            stroke_round(g, x, y, w, h, 9.0 * scale, t.border, scale);
-        }
-        for i in 0..3u8 {
-            let (x, y, w, h) = s(seg_item(i as i32));
-            let inset = 3.0 * scale;
-            let (hov, prs) = state(Hit::Priority(i));
-            let color = if v.priority == Some(i) {
-                Some(t.accent)
-            } else if prs {
-                Some(t.border)
-            } else if hov {
-                Some(t.hover)
-            } else {
-                None
-            };
-            if let Some(c) = color {
-                fill_round(g, x + inset, y + inset, w - 2.0 * inset, h - 2.0 * inset, 7.0 * scale, c);
-            }
-        }
-
-        // Volume buttons.
-        for (hit, rc) in [(Hit::VolDown, vol_down_rect()), (Hit::VolUp, vol_up_rect())] {
+        // Every button is the same rounded pill as on the phone: accent when
+        // selected / pressed (Unlink: while this PC is cut off), else surface.
+        let pill = |hit: Hit, rc: RECT, on: bool| {
             let (hov, prs) = state(hit);
             let (x, y, w, h) = s(rc);
-            let c = if prs { t.accent } else if hov { t.hover } else { t.surface };
-            fill_round(g, x, y, w, h, w / 2.0, c);
-            if !t.dark && !prs {
-                stroke_round(g, x, y, w, h, w / 2.0, t.border, scale);
+            let c = if on || prs { t.accent } else if hov { t.hover } else { t.surface };
+            fill_round(g, x, y, w, h, 8.0 * scale, c);
+            if !t.dark && c == t.surface {
+                stroke_round(g, x, y, w, h, 8.0 * scale, t.border, scale);
             }
+        };
+        for hit in GRID {
+            let on = (hit == Hit::PcAudio && v.pc_audio_off) || (hit == Hit::Disconnect && v.pc_disconnected);
+            pill(hit, grid_rect(hit), on);
         }
+        for i in 0..3u8 {
+            pill(Hit::Priority(i), seg_item(i as i32), v.priority == Some(i));
+        }
+        pill(Hit::VolDown, vol_down_rect(), false);
+        pill(Hit::VolUp, vol_up_rect(), false);
 
-        // Volume bar (-60…0 dB); a knob appears on hover/drag.
-        let (x, y, w, h) = s(bar_rect());
-        fill_round(g, x, y, w, h, h / 2.0, t.border);
-        if v.volume_known {
-            let frac = ((v.volume_n as f32 + 3600.0) / 3600.0).clamp(0.0, 1.0);
-            if frac > 0.0 {
-                fill_round(g, x, y, (w * frac).max(h), h, h / 2.0, t.accent);
-            }
-            if v.hover == Some(Hit::Bar) || v.pressed == Some(Hit::Bar) {
-                let k = 12.0 * scale;
-                fill_round(g, x + w * frac - k / 2.0, y + h / 2.0 - k / 2.0, k, k, k / 2.0, t.accent);
-            }
+        // Volume bar: 12 segments of 5 dB like the phone (click / drag still sets
+        // any 0.5-dB level). A segment is lit when the volume reaches it.
+        let b = bar_rect();
+        let seg_gap = 3;
+        let seg_w = (b.right - b.left - (BAR_SEGS - 1) * seg_gap) as f32 / BAR_SEGS as f32;
+        for i in 0..BAR_SEGS {
+            let seg_n = -3600 + (i + 1) * 300;
+            let lit = v.volume_known && v.volume_n as i32 >= seg_n - 150;
+            let x = (b.left as f32 + i as f32 * (seg_w + seg_gap as f32)) * scale;
+            let (y, w, h) = (b.top as f32 * scale, seg_w * scale, BAR_H as f32 * scale);
+            fill_round(g, x, y, w, h, 4.0 * scale, if lit { t.accent } else { t.border });
         }
         GdipDeleteGraphics(g);
 
@@ -425,32 +441,50 @@ pub fn paint(hdc: HDC, client: RECT, scale: f32, t: &Theme, fonts: &Fonts, v: &V
             bottom: (rc.bottom as f32 * scale) as i32,
         };
 
-        text(mem, fonts.title, t.text, sc(r(PAD, 8, 90, ICON)), "Qudelix 5K", left);
-        text(mem, fonts.small, t.muted, sc(r(PAD + 76, 8, 54, ICON)), &format!("v{}", v.version), left);
+        // Two-line title: "QDLX ⚙ ✕" / "5K  v…" (the version as small as the bottom line).
+        text(mem, fonts.title, t.text, sc(r(PAD, TOP, 40, LINE_H)), "QDLX", left);
         text(mem, fonts.icon, t.muted, sc(settings_rect()), G_SETTINGS, center);
-        text(mem, fonts.icon, t.muted, sc(refresh_rect()), G_REFRESH, center);
         text(mem, fonts.icon, t.muted, sc(close_rect()), G_CLOSE, center);
-        text(mem, fonts.small, t.muted, sc(r(PAD, 34, WIDTH - 2 * PAD, 18)), v.status, left);
+        text(mem, fonts.small, t.text, sc(r(PAD, TOP + LINE_H, XB_LEFT - PAD - 4, LINE_H)), &format!("5K  v{}", v.version), left);
+
+        let ink = |hit: Hit, on: bool| if on || v.pressed == Some(hit) { t.on_accent } else { t.text };
+        text(mem, fonts.icon, ink(Hit::Output, false), sc(grid_rect(Hit::Output)), G_SPEAKERS, center);
+        text(mem, fonts.icon, ink(Hit::Refresh, false), sc(grid_rect(Hit::Refresh)), G_REFRESH, center);
+        let label = if v.pc_audio_off { "Link" } else { "Unlink" };
+        text(mem, fonts.small, ink(Hit::PcAudio, v.pc_audio_off), sc(grid_rect(Hit::PcAudio)), label, center);
+        let label = if v.pc_disconnected { "Connect" } else { "Disconnect" };
+        text(mem, fonts.small, ink(Hit::Disconnect, v.pc_disconnected), sc(grid_rect(Hit::Disconnect)), label, center);
 
         for i in 0..3u8 {
-            let label = ["USB", "A2DP 1", "A2DP 2"][i as usize];
-            let c = if v.priority == Some(i) { t.on_accent } else { t.text };
-            text(mem, fonts.body, c, sc(seg_item(i as i32)), label, center);
+            let c = ink(Hit::Priority(i), v.priority == Some(i));
+            let rc = seg_item(i as i32);
+            if i == 0 {
+                text(mem, fonts.body, c, sc(rc), "USB", center);
+            } else {
+                // Bluetooth mark + slot number, centred as a pair (like the phone).
+                let cx = (rc.left + rc.right) / 2;
+                let h = rc.bottom - rc.top;
+                text(mem, fonts.icon, c, sc(r(cx - 12, rc.top, 12, h)), G_BLUETOOTH, center);
+                text(mem, fonts.body, c, sc(r(cx + 1, rc.top, 10, h)), if i == 1 { "1" } else { "2" }, center);
+            }
         }
 
-        for (hit, rc, glyph) in [(Hit::VolDown, vol_down_rect(), G_MINUS), (Hit::VolUp, vol_up_rect(), G_PLUS)] {
-            let c = if v.pressed == Some(hit) { t.on_accent } else { t.text };
-            text(mem, fonts.icon, c, sc(rc), glyph, center);
+        // −, +, and the dB value in the same font as the priority buttons (like the phone).
+        for (hit, rc, sign) in [(Hit::VolDown, vol_down_rect(), "\u{2212}"), (Hit::VolUp, vol_up_rect(), "+")] {
+            text(mem, fonts.body, ink(hit, false), sc(rc), sign, center);
         }
         let db = if v.volume_known { format!("{:+.1} dB", proto::n_to_db(v.volume_n)) } else { "— dB".into() };
-        text(mem, fonts.big, t.text, sc(r(PAD + VOL_BTN, VOL_Y - 2, WIDTH - 2 * (PAD + VOL_BTN), 30)), &db, center);
+        let mid = vol_down_rect().right;
+        text(mem, fonts.body, t.text, sc(r(mid, VOL_Y, vol_up_rect().left - mid, ROW_H)), &db, center);
 
-        let playing = match v.playing {
-            Some("nothing") => "Nothing playing".to_string(),
-            Some(p) => format!("\u{25B6}  {p}"),
-            None => "\u{21BB} reads volume, priority and playback".to_string(),
+        // Bottom line: the status while something happens (and a few seconds after),
+        // otherwise what is playing — one line, like the phone.
+        let bottom = match (v.show_status, v.playing) {
+            (true, _) => v.status.to_string(),
+            (false, Some(p)) => format!("Playing: {p}"),
+            (false, None) => "Playing: ?".to_string(),
         };
-        text(mem, fonts.small, t.muted, sc(r(PAD, 152, WIDTH - 2 * PAD, 20)), &playing, left);
+        text(mem, fonts.small, t.muted, sc(r(PAD, FOOT_Y, WIDTH - 2 * PAD, FOOT_H)), &bottom, left);
 
         let _ = BitBlt(hdc, 0, 0, w_, h_, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old);
@@ -501,4 +535,54 @@ unsafe fn stroke_round(g: *mut GpGraphics, x: f32, y: f32, w: f32, h: f32, rad: 
     GdipDrawPath(g, pen, p);
     GdipDeletePen(pen);
     GdipDeletePath(p);
+}
+
+/// Layout checks (Windows target only — the UI is Win32): every element sits inside
+/// the gadget, none overlap, and a click on an element's centre hits that element.
+/// Run from WSL: `cargo test --target x86_64-pc-windows-gnu --features ble` (the
+/// test .exe runs through WSL interop).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn elements() -> Vec<(Hit, RECT)> {
+        let mut v = vec![(Hit::Settings, settings_rect()), (Hit::Close, close_rect())];
+        v.extend(GRID.iter().map(|&h| (h, grid_rect(h))));
+        v.extend((0..3).map(|i| (Hit::Priority(i as u8), seg_item(i))));
+        v.push((Hit::VolDown, vol_down_rect()));
+        v.push((Hit::VolUp, vol_up_rect()));
+        v.push((Hit::Bar, bar_rect()));
+        v
+    }
+
+    #[test]
+    fn every_element_inside_the_gadget() {
+        for (hit, rc) in elements() {
+            assert!(rc.left >= 0 && rc.top >= 0 && rc.right <= WIDTH && rc.bottom <= HEIGHT, "{hit:?} {rc:?}");
+        }
+        // The bottom line too.
+        assert!(FOOT_Y + FOOT_H <= HEIGHT);
+    }
+
+    #[test]
+    fn no_elements_overlap() {
+        let els = elements();
+        for (i, (a, ra)) in els.iter().enumerate() {
+            for (b, rb) in &els[i + 1..] {
+                let apart = ra.right <= rb.left || rb.right <= ra.left || ra.bottom <= rb.top || rb.bottom <= ra.top;
+                assert!(apart, "{a:?} {ra:?} overlaps {b:?} {rb:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn clicking_an_elements_centre_hits_it() {
+        for scale in [1.0f32, 1.5, 2.0] {
+            for (hit, rc) in elements() {
+                let (cx, cy) = ((rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2);
+                let (px, py) = ((cx as f32 * scale) as i32, (cy as f32 * scale) as i32);
+                assert_eq!(hit_test(px, py, scale), Some(hit), "scale {scale}");
+            }
+        }
+    }
 }

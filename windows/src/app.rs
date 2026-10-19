@@ -133,15 +133,45 @@ struct AppState {
     selected: Option<u8>,
     volume_n: i16,
     volume_known: bool,
+    /// This PC's music link to the 5K is down (button shows "Link").
+    pc_audio_off: bool,
+    /// Music and calls are both down (button shows "Connect").
+    pc_disconnected: bool,
+    /// When the status last changed, and whether the bottom line still shows it.
+    status_at: std::time::Instant,
+    status_shown: bool,
 }
+
+/// How long a new status replaces "Playing" in the bottom line.
+const STATUS_SHOW: std::time::Duration = std::time::Duration::from_secs(4);
 
 impl AppState {
     /// Poll the worker; repaint only when the status line or device state changed.
     fn refresh_status(&mut self, hwnd: HWND) {
         let status = self.worker.status();
         let dev = self.worker.dev_state();
+        // The bottom line shows a fresh status for STATUS_SHOW, then "Playing" again.
+        if self.status_shown && self.status_at.elapsed() >= STATUS_SHOW {
+            self.status_shown = false;
+            invalidate(hwnd);
+        }
+        // Unlink/Link and Disconnect/Connect follow Windows' real state (checked by
+        // the worker; unknown while an action runs), so a connect made elsewhere —
+        // e.g. in Bluetooth settings — shows up too.
+        if let Some((music, calls, radio)) = self.worker.pc_live() {
+            let (off, gone) = (!music, !music && !calls && !radio);
+            if (off, gone) != (self.pc_audio_off, self.pc_disconnected) {
+                self.pc_audio_off = off;
+                self.pc_disconnected = gone;
+                invalidate(hwnd);
+            }
+        }
         if status == self.status && dev == self.shown {
             return;
+        }
+        if status != self.status {
+            self.status_at = std::time::Instant::now();
+            self.status_shown = !status.is_empty() && status != "Ready";
         }
         if dev != self.shown {
             if let Some(v) = dev.priority {
@@ -191,6 +221,25 @@ impl AppState {
             }
             Hit::Close => post_quit(hwnd),
             Hit::Settings => self.settings_menu(hwnd),
+            Hit::Output => self.output_menu(hwnd),
+            Hit::PcAudio | Hit::Disconnect => {
+                use crate::worker::PcLink;
+                let mode = match hit {
+                    Hit::Disconnect if self.pc_disconnected => PcLink::Connect,
+                    Hit::Disconnect => PcLink::Disconnect,
+                    _ if self.pc_audio_off => PcLink::Link,
+                    _ => PcLink::Unlink,
+                };
+                crate::log::line(&format!("[click] pc {mode:?}"));
+                // Optimistic; the worker's check of Windows' state corrects it.
+                (self.pc_audio_off, self.pc_disconnected) = match mode {
+                    PcLink::Unlink => (true, self.pc_disconnected),
+                    PcLink::Disconnect => (true, true),
+                    PcLink::Link | PcLink::Connect => (false, false),
+                };
+                self.worker.pc_audio(mode);
+                invalidate(hwnd);
+            }
             Hit::VolDown | Hit::VolUp | Hit::Bar => {} // acted on press + repeat/drag
         }
     }
@@ -199,12 +248,85 @@ impl AppState {
         ui::View {
             version: crate::VERSION.trim(),
             status: &self.status,
+            show_status: self.status_shown,
             priority: self.selected,
             volume_n: self.volume_n,
             volume_known: self.volume_known,
             playing: self.shown.playing.as_deref(),
+            pc_audio_off: self.pc_audio_off,
+            pc_disconnected: self.pc_disconnected,
             hover: self.hover,
             pressed: self.pressed,
+        }
+    }
+
+    /// Output button: the PC's active playback devices, the default one checked; a
+    /// pick makes it the default (plain Windows switch — nothing is sent to the 5K).
+    /// Submenu: which output the PC falls back to on Unlink / Disconnect.
+    fn output_menu(&mut self, hwnd: HWND) {
+        const FIRST: usize = 1;
+        const FB_AUTO: usize = 500;
+        const FB_FIRST: usize = 501;
+        let outputs = match crate::audio_out::list() {
+            Ok(o) if !o.is_empty() => o,
+            Ok(_) => {
+                self.worker.note("no sound outputs found");
+                return;
+            }
+            Err(e) => {
+                crate::log::line(&format!("[output] list failed: {e}"));
+                self.worker.note("sound outputs unavailable");
+                return;
+            }
+        };
+        let _modal = ModalGuard::new(hwnd);
+        unsafe {
+            let Ok(m) = CreatePopupMenu() else { return };
+            for (i, o) in outputs.iter().enumerate() {
+                let w = crate::win::wide(&o.name);
+                let flags = MF_STRING | if o.default { MF_CHECKED } else { MF_UNCHECKED };
+                let _ = AppendMenuW(m, flags, FIRST + i, PCWSTR(w.as_ptr()));
+            }
+            let fallback = config::load_fallback_output();
+            let fb = CreatePopupMenu().unwrap_or_default();
+            let add = |id: usize, on: bool, text: &str| {
+                let w = crate::win::wide(text);
+                let _ = AppendMenuW(fb, MF_STRING | if on { MF_CHECKED } else { MF_UNCHECKED }, id, PCWSTR(w.as_ptr()));
+            };
+            add(FB_AUTO, fallback.is_none(), "Automatic (first other output)");
+            let _ = AppendMenuW(fb, MF_SEPARATOR, 0, PCWSTR::null());
+            for (i, o) in outputs.iter().enumerate() {
+                add(FB_FIRST + i, fallback.as_deref() == Some(o.id.as_str()), &o.name);
+            }
+            let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
+            let w = crate::win::wide("On Unlink / Disconnect, switch to");
+            let _ = AppendMenuW(m, MF_POPUP, fb.0 as usize, PCWSTR(w.as_ptr()));
+            let mut cp = POINT::default();
+            let _ = GetCursorPos(&mut cp);
+            let _ = SetForegroundWindow(hwnd); // so the menu closes on an outside click
+            let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, cp.x, cp.y, 0, hwnd, None).0 as usize;
+            let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
+            let _ = DestroyMenu(m); // also destroys the submenu
+            if cmd == FB_AUTO {
+                config::save_fallback_output(None);
+                self.worker.note("fallback output: automatic");
+                return;
+            }
+            if let Some(o) = cmd.checked_sub(FB_FIRST).and_then(|i| outputs.get(i)) {
+                crate::log::line(&format!("[output] fallback set: {}", o.name));
+                config::save_fallback_output(Some(&o.id));
+                self.worker.note(&format!("fallback → {}", o.name));
+                return;
+            }
+            let Some(o) = cmd.checked_sub(FIRST).and_then(|i| outputs.get(i)) else { return };
+            crate::log::line(&format!("[output] → {}", o.name));
+            match crate::audio_out::set_default(&o.id) {
+                Ok(()) => self.worker.note(&format!("output → {}", o.name)),
+                Err(e) => {
+                    crate::log::line(&format!("[output] set failed: {e}"));
+                    self.worker.note("couldn't switch output");
+                }
+            }
         }
     }
 
@@ -657,25 +779,29 @@ pub fn run() -> windows::core::Result<()> {
             hover: None,
             pressed: None,
             status: String::new(),
+            status_at: std::time::Instant::now(),
+            status_shown: false,
             shown: crate::state::DevState::default(),
             selected: last_priority,
             volume_n: last_volume.unwrap_or(-1200),
             volume_known: last_volume.is_some(),
+            pc_audio_off: false,
+            pc_disconnected: false,
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
 
         // ── Place + show (never activate) ─────────────────────────────────────
         let saved = config::load_pos().unwrap_or(Pos { x: 120, y: 120 });
-        SetWindowPos(
-            hwnd,
-            desktop_slot(hwnd),
-            saved.x,
-            saved.y,
-            px(ui::WIDTH),
-            px(ui::HEIGHT),
-            SWP_NOACTIVATE,
-        )?;
+        let (x, y, w_, h_) = (saved.x, saved.y, px(ui::WIDTH), px(ui::HEIGHT));
+        if let Err(e) = SetWindowPos(hwnd, desktop_slot(hwnd), x, y, w_, h_, SWP_NOACTIVATE) {
+            // The window just above the desktop can belong to an elevated process:
+            // Windows then refuses to insert after it (Access denied). Place without
+            // touching the z-order instead of failing to start; the shell guards
+            // re-slot the gadget later.
+            crate::log::line(&format!("[start] z-order slot refused ({e}) — placing without it"));
+            SetWindowPos(hwnd, None, x, y, w_, h_, SWP_NOACTIVATE | SWP_NOZORDER)?;
+        }
         // Win+D doesn't hide windows on Win10/11 — it raises the desktop window over
         // every normal window, so a bottom-pinned gadget would end up *under* it.
         // Make the DESKTOP (Progman) the window's OWNER — user-verified that this
