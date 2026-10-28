@@ -12,8 +12,8 @@
 //! time, so match an endpoint by the address in its filter id OR by its name,
 //! which Windows always builds from the device name: "Headphones (Qudelix-5K)".
 //! Music vs calls by form factor: Headphones = A2DP, Headset = HFP.
-//! Unlink drops music only; Disconnect drops both, after which Windows lets the
-//! Bluetooth link itself go.
+//! Only Disconnect drops links here (disconnect_device, Settings' own way); the
+//! widget's Unlink just moves the PC's output and microphone (worker::Roles).
 
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
@@ -101,15 +101,15 @@ pub fn is_linked(dev: &BtDevice) -> bool {
     live(dev).0
 }
 
-/// Active playback endpoints of `dev` (ids as the sound-output list has them),
-/// the music (A2DP) one first.
-pub fn playback_endpoints(dev: &BtDevice) -> Vec<String> {
+/// Active playback (`capture` = false) or microphone endpoints of `dev` (ids as
+/// the sound-device lists have them), the music (A2DP) one first.
+pub fn audio_endpoints(dev: &BtDevice, capture: bool) -> Vec<String> {
     unsafe {
         let Ok(en) = enumerator() else { return Vec::new() };
         let mut eps: Vec<Ep> = endpoints(&en, dev, DEVICE_STATE_ACTIVE)
             .unwrap_or_default()
             .into_iter()
-            .filter(|e| e.render)
+            .filter(|e| e.render != capture)
             .collect();
         eps.sort_by_key(|e| !e.music);
         eps.into_iter().map(|e| e.id).collect()
@@ -298,11 +298,36 @@ pub fn acl_connected(addr: u64) -> bool {
     }
 }
 
-// NO radio-link (ACL) disconnect here. IOCTL_BTH_DISCONNECT_DEVICE was tried in
-// 1.6.21: on the owner's laptop (Intel Smart Sound Bluetooth offload) the Intel
-// audio DSP driver ("Intel Smart Sound Technology OED") failed 5 s later (code 10)
-// and took the built-in microphone, the speakers and all Intel audio with it.
-// Never send it again.
+/// Drop the radio link (ACL) to `dev` exactly the way Windows Settings'
+/// "Disconnect" does (reversed from SettingsHandlers_Devices.dll): first the KS
+/// one-shot disconnect on every audio endpoint, then BluetoothDisconnectDevice
+/// (BluetoothApis.dll, loaded at run time like Settings does; not in the SDK
+/// headers). No service toggles. 1.6.21 sent the raw IOCTL after switching the
+/// services off, and the Intel audio DSP ("Smart Sound Technology OED") failed
+/// 5 s later; Settings' own order survived on the owner's laptop (2026-10-28).
+/// Returns the API's result (0 = sent).
+pub fn disconnect_device(dev: &BtDevice) -> Result<(), String> {
+    use windows::core::{s, w};
+    use windows::Win32::Devices::Bluetooth::{BLUETOOTH_ADDRESS, BLUETOOTH_ADDRESS_0};
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    type Disconnect = unsafe extern "system" fn(HANDLE, *const BLUETOOTH_ADDRESS) -> u32;
+
+    if let Err(e) = set_connected(dev, false) {
+        crate::log::line(&format!("[btaudio] KS disconnect: {e}"));
+    }
+    unsafe {
+        let lib = LoadLibraryW(w!("BluetoothApis.dll")).map_err(|e| format!("BluetoothApis.dll: {e}"))?;
+        let f = GetProcAddress(lib, s!("BluetoothDisconnectDevice")).ok_or("no BluetoothDisconnectDevice")?;
+        let f: Disconnect = std::mem::transmute(f);
+        let addr = BLUETOOTH_ADDRESS { Anonymous: BLUETOOTH_ADDRESS_0 { ullLong: dev.addr } };
+        // NULL radio = every radio, as Settings calls it.
+        match f(HANDLE::default(), &addr) {
+            0 => Ok(()),
+            r => Err(format!("BluetoothDisconnectDevice: {r}")),
+        }
+    }
+}
 
 /// Handle of the first Bluetooth radio (null if none — the APIs then pick one).
 unsafe fn first_radio() -> windows::Win32::Foundation::HANDLE {

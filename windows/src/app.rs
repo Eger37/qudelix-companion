@@ -133,7 +133,7 @@ struct AppState {
     selected: Option<u8>,
     volume_n: i16,
     volume_known: bool,
-    /// This PC's music link to the 5K is down (button shows "Link").
+    /// The 5K isn't this PC's default output (button shows "Link").
     pc_audio_off: bool,
     /// Music and calls are both down (button shows "Connect").
     pc_disconnected: bool,
@@ -158,8 +158,9 @@ impl AppState {
         // Unlink/Link and Disconnect/Connect follow Windows' real state (checked by
         // the worker; unknown while an action runs), so a connect made elsewhere —
         // e.g. in Bluetooth settings — shows up too.
-        if let Some((music, calls, radio)) = self.worker.pc_live() {
-            let (off, gone) = (!music, !music && !calls && !radio);
+        // Link = the 5K isn't Windows' default output (Unlink moves it away).
+        if let Some((music, calls, radio, on5k)) = self.worker.pc_live() {
+            let (off, gone) = (!on5k, !music && !calls && !radio);
             if (off, gone) != (self.pc_audio_off, self.pc_disconnected) {
                 self.pc_audio_off = off;
                 self.pc_disconnected = gone;
@@ -293,7 +294,7 @@ impl AppState {
                 let w = crate::win::wide(text);
                 let _ = AppendMenuW(fb, MF_STRING | if on { MF_CHECKED } else { MF_UNCHECKED }, id, PCWSTR(w.as_ptr()));
             };
-            add(FB_AUTO, fallback.is_none(), "Automatic (first other output)");
+            add(FB_AUTO, fallback.is_none(), "Automatic (the output before the 5K)");
             let _ = AppendMenuW(fb, MF_SEPARATOR, 0, PCWSTR::null());
             for (i, o) in outputs.iter().enumerate() {
                 add(FB_FIRST + i, fallback.as_deref() == Some(o.id.as_str()), &o.name);

@@ -31,7 +31,7 @@ pub enum Hit {
     Settings,
     /// The volume bar: click or drag to set the level.
     Bar,
-    /// Unlink (music off) / Link (all back) this PC's Bluetooth links to the 5K.
+    /// Unlink (output + mic off the 5K) / Link (back on it).
     PcAudio,
     /// Drop this PC's whole Bluetooth connection to the 5K (music + calls).
     Disconnect,

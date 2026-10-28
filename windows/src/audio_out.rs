@@ -9,8 +9,8 @@ use std::ffi::c_void;
 use windows::core::{Interface, GUID, HRESULT, PCWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Media::Audio::{
-    eCommunications, eConsole, eMultimedia, eRender, ERole, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
-    DEVICE_STATE_ACTIVE,
+    eCapture, eCommunications, eConsole, eMultimedia, eRender, EDataFlow, ERole, IMMDevice, IMMDeviceEnumerator,
+    MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_APARTMENTTHREADED, STGM_READ,
@@ -50,8 +50,64 @@ pub fn list() -> Result<Vec<Output>, String> {
     }
 }
 
+/// One of the defaults Windows keeps: the output or the microphone, either the
+/// plain default (console + multimedia) or the communications one.
+#[derive(Clone, Copy, Debug)]
+pub struct Role {
+    pub capture: bool,
+    pub comms: bool,
+}
+
+/// All four, in a fixed order (callers index their own arrays by it).
+pub const ROLES: [Role; 4] = [
+    Role { capture: false, comms: false },
+    Role { capture: false, comms: true },
+    Role { capture: true, comms: false },
+    Role { capture: true, comms: true },
+];
+
+impl Role {
+    fn flow(self) -> EDataFlow {
+        if self.capture { eCapture } else { eRender }
+    }
+    fn roles(self) -> &'static [ERole] {
+        if self.comms { &[eCommunications] } else { &[eConsole, eMultimedia] }
+    }
+}
+
+/// The endpoint id holding `r` now; None = no device.
+pub fn default_of(r: Role) -> Option<String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let role = if r.comms { eCommunications } else { eConsole };
+        enumerator().ok()?.GetDefaultAudioEndpoint(r.flow(), role).ok().and_then(|d| device_id(&d))
+    }
+}
+
+/// Ids of the active outputs (`capture` = false) or microphones, in Windows' order.
+pub fn active_ids(capture: bool) -> Vec<String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let flow = if capture { eCapture } else { eRender };
+        let Ok(all) = enumerator().and_then(|e| e.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE).map_err(|e| e.to_string()))
+        else {
+            return Vec::new();
+        };
+        (0..all.GetCount().unwrap_or(0)).filter_map(|i| all.Item(i).ok().and_then(|d| device_id(&d))).collect()
+    }
+}
+
+/// Make `id` (an output or a microphone) the device for `r`.
+pub fn set_role(id: &str, r: Role) -> Result<(), String> {
+    set_roles(id, r.roles())
+}
+
 /// Make `id` the default playback device for every role (console, multimedia, calls).
 pub fn set_default(id: &str) -> Result<(), String> {
+    set_roles(id, &[eConsole, eMultimedia, eCommunications])
+}
+
+fn set_roles(id: &str, roles: &[ERole]) -> Result<(), String> {
     // CPolicyConfigClient / IPolicyConfig (Windows 7+).
     const CLSID_POLICY_CONFIG: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
     const IID_POLICY_CONFIG: GUID = GUID::from_u128(0xf8679f50_850a_41cf_9c72_430f290290c8);
@@ -69,7 +125,7 @@ pub fn set_default(id: &str) -> Result<(), String> {
         let set: SetDefault = std::mem::transmute(*vtbl.add(SET_DEFAULT_ENDPOINT));
         let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
         let mut r = Ok(());
-        for role in [eConsole, eMultimedia, eCommunications] {
+        for &role in roles {
             if let Err(e) = set(pc, PCWSTR(wide.as_ptr()), role).ok() {
                 r = Err(format!("SetDefaultEndpoint: {e}"));
             }
