@@ -47,15 +47,25 @@ Playing: Bluetooth 1 (AAC)
 
 ## Behaviour tied to the buttons
 
-* **Unlink**: this host drops its music **and calls** links (A2DP + HFP) to the 5K; the
-  pairing stays. **Disconnect**: the same plus the radio link itself, a real Bluetooth
-  disconnect. In both cases the 5K's priority moves to the source that stays (the other
-  host's slot, else USB). On the PC this happens *before* the drop, because asking the 5K
-  afterwards would bring the link back. The PC also moves its sound to the fallback output
-  first (Output menu → "On Unlink / Disconnect, switch to").
-* The labels follow the real state: Unlink ↔ **Link** (music down) and Disconnect ↔
-  **Connect** (nothing of the 5K left). Link / Connect restore music and calls, and on the
-  PC the sound goes back to the 5K. The status claims success only after it is verified.
+* **Unlink** on the phone: it drops its music **and calls** links (A2DP + HFP) to the 5K;
+  the pairing stays. **Unlink on the PC** leaves Bluetooth alone (dropping the 5K's links
+  isn't safe with the Intel Bluetooth offload): it moves Windows' default output and
+  microphone, both the plain and the communications defaults, off the 5K to the devices
+  they had before (for the output, the Output menu's "On Unlink / Disconnect, switch to"
+  pick comes first).
+* **Disconnect**: Unlink plus the radio link itself, a real Bluetooth disconnect. The PC
+  does it exactly like the "Disconnect" button in Windows Settings (endpoints first,
+  then the device; no service toggles) and opens Bluetooth settings only if that fails.
+* In both cases the 5K's priority moves to the source that stays (the other host's slot,
+  else USB). On the PC this happens *before* any drop, because asking the 5K afterwards
+  would bring the link back.
+* The labels follow the real state: Unlink ↔ **Link** (phone: music down; PC: the 5K isn't
+  Windows' default output) and Disconnect ↔ **Connect** (nothing of the 5K left). Link /
+  Connect restore music and calls if they are down; on the PC, the output and microphone
+  go back to the 5K. The status claims success only after it is verified.
+* On the phone, the first Link / Connect / Disconnect shows Android's own "allow Qudelix
+  Widget to manage Qudelix-5K?" dialog once (Companion Device Manager): without it Android
+  blocks the full connect / disconnect and connecting calls. Declined: per profile instead.
 * **Output**: on the PC, a menu of playback devices (pick = Windows default). On the
   phone, it opens Android's own output picker.
 * Refresh is tap-only. There's no automatic refresh on screen-on or visibility, which the
