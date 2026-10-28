@@ -26,3 +26,6 @@ icon-modeling/refs/*
 
 # Release artifacts (tools/release.sh)
 dist/
+
+# Local reverse-engineering toolkit (rea + Ghidra + JDK + Node) and copied Windows DLLs (~1.5 GB)
+rea/
