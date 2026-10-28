@@ -44,6 +44,28 @@ public class DevStateTest {
         s.apply(h("FF 01 00 12 F0 01 81 11 00 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"));
         check(s.remainingSource() == 0, "no Bluetooth host left → USB");
 
+        // Captured 2026-10-18 (same as state.rs): phone AC:3E:B1:AC:09:BF on A2DP#1+HFP#1,
+        // PC 88:F4:DA:75:49:27 listed with no profiles.
+        s = new DevState();
+        check(s.sourceWithout(1) == null && s.phoneAddr(true) == null, "conn unknown → no host info");
+        s.apply(h("FF 01 00 12 F0 01 81 11 00 04 57 3E AC B1 BF 09 AC 00 07 F4 88 DA 27 49 75 00"));
+        long phone = 0xAC3EB1AC09BFL, pc = 0x88F4DA754927L;
+        check(s.hostAddr[0] == phone && s.hostBits[0] == 0x5, "host 1 = phone on A2DP#1+HFP#1");
+        check(s.hostAddr[1] == pc && s.hostBits[1] == 0x0, "host 2 = PC, no profiles");
+        check(s.sourceWithout(pc) == 1, "without the PC → the phone's slot");
+        check(s.sourceWithout(phone) == 0, "without the phone → USB");
+        check(s.phoneAddr(true) == phone, "phone told apart: the only host on A2DP");
+        check(s.phoneAddr(false) == null, "phone music off → not the A2DP host");
+        DevState before = s.connCopy();
+        s.apply(h("FF 01 00 12 F0 01 81 11 00 04 57 3E AC B1 BF 09 AC 00 AF F4 88 DA 27 49 75 00"));
+        check(s.phoneAddr(true) == null, "both hosts on A2DP → can't tell");
+        DevState both = s.connCopy();
+        s.apply(h("FF 01 00 12 F0 01 81 11 00 04 07 3E AC B1 BF 09 AC 00 AF F4 88 DA 27 49 75 00"));
+        check(both.droppedHost(s) == phone, "after a drop: the host that left A2DP is the phone");
+        check(before.droppedHost(both) == null, "nobody left → no host learned");
+        check(DevState.addrString(phone).equals("AC:3E:B1:AC:09:BF"), "address → text");
+        check(DevState.parseAddr("ac:3e:b1:ac:09:bf") == phone, "text → address");
+
         DevState.Splitter sp = new DevState.Splitter();
         byte[] x = h("FF 01 00 01 F0 01 02 03 02 FF 01 00 02 00 0A C0");
         check(sp.push(x, x.length).size() == 1, "splitter: one complete + one partial frame");

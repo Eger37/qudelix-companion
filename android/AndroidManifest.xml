@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
 
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
+    <!-- Companion Device Manager association with the 5K: lets the app drop / bring back
+         every link at once (PhoneLink.allProfiles). Optional: without it, per profile. -->
+    <uses-feature android:name="android.software.companion_device_setup" android:required="false" />
 
     <!-- Foreground service (widget taps start it from the background) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -157,6 +160,27 @@
             android:noHistory="true"
             android:taskAffinity=".output"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Link / Connect / Disconnect before the CDM association exists: asks for it once. -->
+        <activity
+            android:name=".LinkActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=".link"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- The 5K's links changed (also outside the widget): redraw Unlink/Link and
+             Disconnect/Connect. System broadcasts, so exported; all are protected. -->
+        <receiver
+            android:name=".BtStateReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+                <action android:name="android.bluetooth.device.action.ACL_DISCONNECTED" />
+                <action android:name="android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED" />
+                <action android:name="android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".QudelixWidget"

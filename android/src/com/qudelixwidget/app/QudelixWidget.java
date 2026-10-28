@@ -23,11 +23,31 @@ public class QudelixWidget extends AppWidgetProvider {
         if (Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) {
             Dbg.log(context, "package replaced → v" + Updater.installedVersionName(context));
             update(context);
+            readLinks(context, goAsync());
+            return;
+        }
+        if (AppWidgetManager.ACTION_APPWIDGET_UPDATE.equals(action)) {
+            super.onReceive(context, intent);
+            readLinks(context, goAsync());
             return;
         }
         // Button taps go to the non-exported TapReceiver, never here: this provider
         // is exported, so any app could send it a broadcast.
         super.onReceive(context, intent);
+    }
+
+    /** Read this phone's links to the 5K off the main thread (the profile proxies block)
+     *  and redraw Unlink/Link and Disconnect/Connect from them. */
+    private static void readLinks(Context context, PendingResult done) {
+        new Thread(() -> {
+            try {
+                if (RfcommService.hasBtPermission(context)) PhoneLink.refresh(context);
+            } catch (Exception e) {
+                Dbg.log(context, "link state: " + e);
+            } finally {
+                done.finish();
+            }
+        }, "qudelix-link").start();
     }
 
     /** Save a status line and refresh the widget. Safe to call from any thread. */
@@ -87,23 +107,20 @@ public class QudelixWidget extends AppWidgetProvider {
         v.setOnClickPendingIntent(R.id.btn_vol_up, volumePI(context, +1));
         v.setOnClickPendingIntent(R.id.btn_refresh, refreshPI(context));
         // Unlink = this phone drops its music + calls links to the 5K (the 5K moves on to the
-        // other source); Link brings it back.
-        Intent pa = new Intent(context, TapReceiver.class)
-                .setAction(RfcommService.ACTION_PHONE_AUDIO)
-                .putExtra(RfcommService.EXTRA_VALUE, audioOff ? RfcommService.LINK : RfcommService.UNLINK);
-        v.setOnClickPendingIntent(R.id.btn_phone_audio, PendingIntent.getBroadcast(context, 600, pa, piFlags()));
-        // Disconnect = drop every Bluetooth link to the 5K (audio + calls); then the
-        // button reads "Connect" (accent) and brings everything back (LINK does both).
+        // other source); Link brings them back. Labels follow Android's real state (PhoneLink).
+        boolean ask = PhoneLink.needsAssociation(context);
+        v.setOnClickPendingIntent(R.id.btn_phone_audio,
+                linkPI(context, 600, audioOff ? RfcommService.LINK : RfcommService.UNLINK, ask));
+        // Disconnect = drop every Bluetooth link to the 5K (audio + calls + the radio link);
+        // then the button reads "Connect" (accent) and brings everything back.
         boolean gone = Prefs.getPhoneDisconnected(context);
         v.setTextViewText(R.id.btn_disconnect, gone ? "Connect" : "Disconnect");
         if (gone) {
             k.accentBg(v, R.id.btn_disconnect, R.drawable.w_btn_tint, R.drawable.w_btn_on);
             v.setTextColor(R.id.btn_disconnect, k.onAccent);
         }
-        Intent dc = new Intent(context, TapReceiver.class)
-                .setAction(RfcommService.ACTION_PHONE_AUDIO)
-                .putExtra(RfcommService.EXTRA_VALUE, gone ? RfcommService.LINK : RfcommService.DISCONNECT);
-        v.setOnClickPendingIntent(R.id.btn_disconnect, PendingIntent.getBroadcast(context, 601, dc, piFlags()));
+        v.setOnClickPendingIntent(R.id.btn_disconnect,
+                linkPI(context, 601, gone ? RfcommService.CONNECT : RfcommService.DISCONNECT, ask));
         // A tap anywhere that isn't a button (background, title, status, "Playing")
         // refreshes too: any touch shows the current state.
         for (int id : new int[]{R.id.root, R.id.title, R.id.playing}) {
@@ -254,6 +271,21 @@ public class QudelixWidget extends AppWidgetProvider {
                 .setAction(RfcommService.ACTION_PRIORITY)
                 .putExtra(RfcommService.EXTRA_VALUE, value);
         return PendingIntent.getBroadcast(context, 100 + value, i, piFlags());
+    }
+
+    /** Unlink / Link / Disconnect / Connect. Everything but Unlink needs the CDM association
+     *  (full connect / disconnect): while it's missing, LinkActivity asks for it first. */
+    private static PendingIntent linkPI(Context context, int code, int mode, boolean askAssociation) {
+        if (askAssociation && mode != RfcommService.UNLINK) {
+            Intent i = new Intent(context, LinkActivity.class)
+                    .putExtra(LinkActivity.EXTRA_MODE, mode)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            return PendingIntent.getActivity(context, code, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        }
+        Intent i = new Intent(context, TapReceiver.class)
+                .setAction(RfcommService.ACTION_PHONE_AUDIO)
+                .putExtra(RfcommService.EXTRA_VALUE, mode);
+        return PendingIntent.getBroadcast(context, code, i, piFlags());
     }
 
     private static PendingIntent refreshPI(Context context) {

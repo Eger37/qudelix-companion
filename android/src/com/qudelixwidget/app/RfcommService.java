@@ -4,9 +4,7 @@ import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.Service;
-import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
 import android.bluetooth.BluetoothSocket;
 import android.content.Context;
@@ -19,7 +17,6 @@ import android.os.IBinder;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -47,7 +44,7 @@ public class RfcommService extends Service {
     public static final String ACTION_REFRESH  = "com.qudelixwidget.app.REFRESH";
     /** Absolute volume (value = n, dB*60) — from the volume popup's slider / hold-repeat. */
     public static final String ACTION_VOLUME_SET = "com.qudelixwidget.app.VOLUME_SET";
-    /** This phone's link to the 5K: value UNLINK (audio off), LINK (back on), DISCONNECT (everything off). */
+    /** This phone's link to the 5K: value UNLINK (music + calls off), LINK / CONNECT (back on), DISCONNECT (everything off). */
     public static final String ACTION_PHONE_AUDIO = "com.qudelixwidget.app.PHONE_AUDIO";
     public static final String EXTRA_VALUE     = "value"; // priority 0/1/2, or volume step -1/+1
 
@@ -136,7 +133,10 @@ public class RfcommService extends Service {
         cancelRelease();
         // Volume taps show no status: the dB readout already shows the result.
         boolean volume = ACTION_VOLUME.equals(action) || ACTION_VOLUME_SET.equals(action);
-        if (!volume) QudelixWidget.pushStatus(this, ACTION_REFRESH.equals(action) ? "reading…" : "sending…");
+        if (!volume) QudelixWidget.pushStatus(this, ACTION_REFRESH.equals(action) ? "updating…" : "sending…");
+        // Refresh also re-reads this phone's links (Unlink/Link, Disconnect/Connect) —
+        // before the session, whose own radio link would count as "connected".
+        if (ACTION_REFRESH.equals(action) && (session == null || !session.alive)) PhoneLink.refresh(this);
         boolean fresh = session == null || !session.alive;
         if (!ensureSession()) {
             scheduleRelease();
@@ -169,7 +169,7 @@ public class RfcommService extends Service {
             } else if (ACTION_REFRESH.equals(action)) {
                 if (!fresh) session.write(Proto.REQ_INIT_DATA); // a new session already asked
                 sleep(1200);
-                QudelixWidget.pushStatus(this, "updated");
+                QudelixWidget.pushStatus(this, ""); // no "updated": straight to what's playing
             }
             if (!ACTION_REFRESH.equals(action)) {
                 // Every tap also reads the state back, so the widget shows what
@@ -188,132 +188,198 @@ public class RfcommService extends Service {
     // ── phone audio link (io thread) ─────────────────────────────────────────
 
     /**
-     * UNLINK drops this phone's music and calls links (A2DP + HFP) to the 5K,
-     * DISCONNECT the whole Bluetooth connection, LINK brings music and calls back. The 5K
-     * has no "drop host X" command, so the phone does it itself — via hidden
-     * Bluetooth APIs, which newer Android may refuse to normal apps (then the status
-     * says so). After a drop, point the priority at the source that is left.
+     * UNLINK drops this phone's music and calls links (A2DP + HFP) to the 5K, DISCONNECT
+     * the whole Bluetooth connection; LINK / CONNECT bring music and calls back. The 5K
+     * has no "drop host X" command, so the phone does it itself — via hidden Bluetooth
+     * APIs (PhoneLink). The 5K's priority moves to the source that stays BEFORE the drop
+     * (asking the 5K afterwards would bring the link back), like the PC. Every result is
+     * checked against what Android reports before the status claims it.
      */
     private void setPhoneAudio(int mode) {
-        String[] names = {"unlink", "link", "disconnect"};
-        Dbg.log(this, "phone audio " + names[mode]);
+        Dbg.log(this, "phone audio " + NAMES[mode]);
         cancelRelease();
-        closeSession();
-        BluetoothDevice dev = findTarget();
+        BluetoothDevice dev = PhoneLink.target(this);
         if (dev == null) {
+            closeSession();
             QudelixWidget.pushStatus(this, "5K not paired / BT off");
             scheduleRelease();
             return;
         }
-        QudelixWidget.pushStatus(this, new String[]{"unlinking…", "linking…", "disconnecting…"}[mode]);
-        String err;
-        if (mode == UNLINK) {
-            // Music and calls; it counts as done if either went (calls may be blocked or absent).
-            String audio = profileCall(dev, BluetoothProfile.A2DP, "disconnect");
-            String calls = profileCall(dev, BluetoothProfile.HEADSET, "disconnect");
-            Dbg.log(this, "unlink: audio " + (audio == null ? "ok" : audio) + ", calls " + (calls == null ? "ok" : calls));
-            err = audio == null || calls == null ? null : audio;
-        } else if (mode == LINK) {
-            err = profileCall(dev, BluetoothProfile.A2DP, "connect");
-            String hfp = profileCall(dev, BluetoothProfile.HEADSET, "connect");
-            if (hfp != null) Dbg.log(this, "calls: " + hfp); // audio is what matters
-        } else {
-            err = disconnectAll(dev);
-        }
-        if (err != null) {
-            Dbg.log(this, "phone audio: " + err);
-            QudelixWidget.pushStatus(this, err);
-            scheduleRelease();
-            return;
-        }
-        boolean on = mode == LINK;
-        Prefs.setPhoneAudioOff(this, !on);
-        Prefs.setPhoneDisconnected(this, mode == DISCONNECT);
-        if (on) {
-            QudelixWidget.pushStatus(this, "linked");
-            scheduleRelease();
-            return;
-        }
-        sleep(2500); // the 5K needs a moment to notice the link is gone
-        synchronized (state) { state.a2dp = null; } // only trust a fresh reply
-        if (!ensureSession()) {
-            scheduleRelease();
-            return;
-        }
-        try {
-            session.write(Proto.REQ_CONN_STATUS);
-            waitFor(() -> { synchronized (state) { return state.a2dp != null; } }, 1500);
-            Integer target, cur;
-            synchronized (state) { target = state.remainingSource(); cur = state.priority; }
-            Dbg.log(this, names[mode] + ": remaining source " + target + ", priority " + cur);
-            String done = mode == DISCONNECT ? "disconnected" : "unlinked";
-            if (target != null && !target.equals(cur)) {
-                session.write(Proto.setPriority(target));
-                Prefs.setPriority(this, target);
-                session.write(Proto.REQ_INIT_DATA);
-                QudelixWidget.pushStatus(this, done + " · → " + new String[]{"USB", "Bluetooth 1", "Bluetooth 2"}[target]);
-            } else {
-                QudelixWidget.pushStatus(this, done);
-            }
-        } catch (IOException e) {
-            Dbg.log(this, "write failed: " + e);
+        QudelixWidget.pushStatus(this, NAMES[mode] + "ing…");
+        if (mode == LINK || mode == CONNECT) {
             closeSession();
-            QudelixWidget.pushStatus(this, names[mode] + "ed · link lost"); // unlinked / disconnected
+            String done = link(dev, mode);
+            readBack();
+            QudelixWidget.pushStatus(this, done);
+            scheduleRelease();
+            return;
         }
+        boolean[] live = PhoneLink.read(this, dev);
+        if (!live[0] && !live[1] && (mode == UNLINK || !live[2])) {
+            PhoneLink.show(this, live);
+            if (live[2]) readBack();
+            QudelixWidget.pushStatus(this, mode == UNLINK ? "phone already unlinked" : "phone already disconnected");
+            scheduleRelease();
+            return;
+        }
+        DevState before = new DevState();
+        String moved = pointPriorityAway(live[0], before);
+        closeSession();
+        String fail = drop(dev, mode);
+        // Unlink: music and calls gone. Disconnect: the radio link too (if Android lets it).
+        boolean full = mode == DISCONNECT && fail == null;
+        boolean[] now = PhoneLink.waitFor(this, dev, l -> !l[0] && !l[1] && (!full || !l[2]), full ? 8000 : 5000);
+        PhoneLink.show(this, now);
+        Dbg.log(this, NAMES[mode] + ": music=" + now[0] + " calls=" + now[1] + " radio=" + now[2]);
+        String status;
+        if (now[0]) {
+            status = "couldn't " + NAMES[mode] + " phone" + (fail != null ? " · " + fail : "");
+        } else {
+            if (moved == null && before.hostAddr != null) moved = pointPriorityAfter(before);
+            String done = now[1] ? "music off · calls still on"
+                    : mode == UNLINK ? "phone unlinked"
+                    : now[2] ? "music + calls off · link stays" : "phone disconnected";
+            status = moved != null && !moved.isEmpty() ? done + " · → " + moved : done;
+        }
+        // Not after a full disconnect: a session would bring the radio link back.
+        if (!full || now[2]) readBack();
+        QudelixWidget.pushStatus(this, status);
         scheduleRelease();
     }
 
-    /** Modes of ACTION_PHONE_AUDIO (EXTRA_VALUE). */
-    static final int UNLINK = 0, LINK = 1, DISCONNECT = 2;
-
-    /** Drop every link to the 5K: the hidden BluetoothDevice.disconnect() (all profiles)
-     *  if Android allows it, else audio and calls one by one. Null = done. */
-    private String disconnectAll(BluetoothDevice dev) {
+    /** After a link action: read the 5K's state again ("updating…"), so the widget
+     *  shows what the 5K does now. The caller then shows the action's result. */
+    private void readBack() {
+        QudelixWidget.pushStatus(this, "updating…");
+        boolean fresh = session == null || !session.alive;
+        if (!ensureSession()) return;
         try {
-            Object r = dev.getClass().getMethod("disconnect").invoke(dev);
-            Dbg.log(this, "BluetoothDevice.disconnect() → " + r);
-            if (Integer.valueOf(0).equals(r) || Boolean.TRUE.equals(r)) return null; // BluetoothStatusCodes.SUCCESS
-        } catch (Exception e) {
-            Throwable c = e instanceof java.lang.reflect.InvocationTargetException ? e.getCause() : e;
-            Dbg.log(this, "BluetoothDevice.disconnect() blocked: " + c);
+            if (!fresh) session.write(Proto.REQ_INIT_DATA); // a new session already asked
+            sleep(1200);
+        } catch (IOException e) {
+            Dbg.log(this, "read-back failed: " + e);
+            closeSession();
         }
-        String audio = profileCall(dev, BluetoothProfile.A2DP, "disconnect");
-        String calls = profileCall(dev, BluetoothProfile.HEADSET, "disconnect");
-        Dbg.log(this, "disconnect: audio " + (audio == null ? "ok" : audio) + ", calls " + (calls == null ? "ok" : calls));
-        if (audio == null || calls == null) return null; // something was dropped
-        return audio;
     }
 
-    /** Hidden connect/disconnect(device) of a profile proxy (A2DP / HEADSET) by
-     *  reflection; null = done, else why not. */
-    private String profileCall(BluetoothDevice dev, int profile, String method) {
-        String what = profile == BluetoothProfile.A2DP ? "audio" : "calls";
-        BluetoothAdapter a = adapter();
-        if (a == null || !a.isEnabled()) return "BT off";
-        final BluetoothProfile[] proxy = new BluetoothProfile[1];
-        final CountDownLatch got = new CountDownLatch(1);
-        boolean asked = a.getProfileProxy(this, new BluetoothProfile.ServiceListener() {
-            @Override public void onServiceConnected(int p, BluetoothProfile bp) { proxy[0] = bp; got.countDown(); }
-            @Override public void onServiceDisconnected(int p) {}
-        }, profile);
-        try {
-            if (!asked || !got.await(2000, TimeUnit.MILLISECONDS)) return "no " + what + " service";
-        } catch (InterruptedException e) {
-            return "interrupted";
+    /** Modes of ACTION_PHONE_AUDIO (EXTRA_VALUE). */
+    static final int UNLINK = 0, LINK = 1, DISCONNECT = 2, CONNECT = 3;
+    private static final String[] NAMES = {"unlink", "link", "disconnect", "connect"};
+    private static final String[] SOURCES = {"USB", "Bluetooth 1", "Bluetooth 2"};
+
+    /** Drop music + calls (Unlink), or everything (Disconnect: the full disconnect if the
+     *  CDM association allows it, else per profile). Null = Android took it, else why not. */
+    private String drop(BluetoothDevice dev, int mode) {
+        if (mode == DISCONNECT) {
+            String all = PhoneLink.allProfiles(this, dev, false);
+            if (all == null) return null;
+            Dbg.log(this, "full disconnect: " + all + " — per profile instead");
+            String audio = PhoneLink.profileCall(this, dev, BluetoothProfile.A2DP, "disconnect");
+            String calls = PhoneLink.profileCall(this, dev, BluetoothProfile.HEADSET, "disconnect");
+            Dbg.log(this, "disconnect: audio " + (audio == null ? "ok" : audio) + ", calls " + (calls == null ? "ok" : calls));
+            return all; // the radio link may stay: say so
         }
+        String audio = PhoneLink.profileCall(this, dev, BluetoothProfile.A2DP, "disconnect");
+        String calls = PhoneLink.profileCall(this, dev, BluetoothProfile.HEADSET, "disconnect");
+        Dbg.log(this, "unlink: audio " + (audio == null ? "ok" : audio) + ", calls " + (calls == null ? "ok" : calls));
+        return audio != null ? audio : calls;
+    }
+
+    /** Link / Connect: every profile at once (CDM association), else music and calls one
+     *  by one; then wait until Android shows them. Returns the status line. */
+    private String link(BluetoothDevice dev, int mode) {
+        String done = mode == CONNECT ? "phone connected" : "phone linked";
+        String fail = PhoneLink.allProfiles(this, dev, true);
+        if (fail != null) {
+            fail = PhoneLink.profileCall(this, dev, BluetoothProfile.A2DP, "connect");
+            String calls = PhoneLink.profileCall(this, dev, BluetoothProfile.HEADSET, "connect");
+            if (calls != null) Dbg.log(this, "calls: " + calls);
+        }
+        boolean[] now = PhoneLink.waitFor(this, dev, l -> l[0] && l[1], 10000);
+        PhoneLink.show(this, now);
+        Dbg.log(this, NAMES[mode] + ": music=" + now[0] + " calls=" + now[1]);
+        if (!now[0]) return "couldn't " + NAMES[mode] + " phone" + (fail != null ? " · " + fail : "");
+        return now[1] ? done : done + " · calls missing";
+    }
+
+    /**
+     * Before a drop: ask the 5K which hosts hold its A2DP slots and point the priority at
+     * the source that stays once this phone leaves. Needs this phone's own address (learned,
+     * see DevState.phoneAddr); if it can't be told yet, leaves `before` filled for
+     * pointPriorityAfter. Returns the new priority's name, "" if it stays, null if unknown.
+     */
+    private String pointPriorityAway(boolean musicOn, DevState before) {
+        if (!ensureSession()) return "";
         try {
-            int st = proxy[0].getConnectionState(dev);
-            Dbg.log(this, what + " state before " + method + ": " + st);
-            if (method.equals("disconnect") && st != BluetoothProfile.STATE_CONNECTED) return "phone " + what + " not on the 5K";
-            if (method.equals("connect") && st == BluetoothProfile.STATE_CONNECTED) return null; // already there
-            Object r = proxy[0].getClass().getMethod(method, BluetoothDevice.class).invoke(proxy[0], dev);
-            return Boolean.TRUE.equals(r) ? null : "Android refused " + method;
-        } catch (java.lang.reflect.InvocationTargetException e) {
-            return "Android blocks " + method + ": " + e.getCause().getClass().getSimpleName();
-        } catch (Exception e) {
-            return "Android blocks " + method + ": " + e.getClass().getSimpleName();
-        } finally {
-            a.closeProfileProxy(profile, proxy[0]);
+            synchronized (state) { state.hostAddr = null; } // only trust a fresh reply
+            session.write(Proto.REQ_CONN_STATUS);
+            waitFor(() -> { synchronized (state) { return state.hostAddr != null; } }, 1500);
+            Integer target, cur;
+            synchronized (state) {
+                if (state.hostAddr == null) return "";
+                long self = Prefs.getSelfAddr(this);
+                if (self < 0) {
+                    Long p = state.phoneAddr(musicOn);
+                    if (p != null) {
+                        self = p;
+                        Prefs.setSelfAddr(this, p);
+                        Dbg.log(this, "this phone on the 5K = " + DevState.addrString(p));
+                    }
+                }
+                // Phone not on A2DP: every A2DP host listed is another one (-1 matches none).
+                target = self >= 0 ? state.sourceWithout(self) : !musicOn ? state.sourceWithout(-1) : null;
+                cur = state.priority;
+                if (target == null) {
+                    DevState c = state.connCopy();
+                    before.hostAddr = c.hostAddr;
+                    before.hostBits = c.hostBits;
+                    Dbg.log(this, "can't tell this phone's slot yet — priority after the drop");
+                    return null;
+                }
+            }
+            Dbg.log(this, "source without this phone " + target + ", priority " + cur);
+            if (target.equals(cur)) return "";
+            session.write(Proto.setPriority(target));
+            Prefs.setPriority(this, target);
+            QudelixWidget.update(this);
+            return SOURCES[target];
+        } catch (IOException e) {
+            Dbg.log(this, "write failed: " + e);
+            closeSession();
+            return "";
+        }
+    }
+
+    /** Fallback (once, until this phone's address is learned): after the drop, read the
+     *  slot that's left — which also tells which host was this phone. This brings the radio
+     *  link back for a moment; Android lets it go once the session is released. */
+    private String pointPriorityAfter(DevState before) {
+        sleep(2500); // the 5K needs a moment to notice the link is gone
+        synchronized (state) { state.hostAddr = null; state.a2dp = null; }
+        if (!ensureSession()) return "";
+        try {
+            session.write(Proto.REQ_CONN_STATUS);
+            waitFor(() -> { synchronized (state) { return state.hostAddr != null; } }, 1500);
+            Integer target, cur;
+            synchronized (state) {
+                Long me = before.droppedHost(state);
+                if (me != null) {
+                    Prefs.setSelfAddr(this, me);
+                    Dbg.log(this, "this phone on the 5K = " + DevState.addrString(me));
+                }
+                target = state.remainingSource();
+                cur = state.priority;
+            }
+            Dbg.log(this, "after the drop: remaining source " + target + ", priority " + cur);
+            if (target == null || target.equals(cur)) return "";
+            session.write(Proto.setPriority(target));
+            Prefs.setPriority(this, target);
+            session.write(Proto.REQ_INIT_DATA);
+            return SOURCES[target];
+        } catch (IOException e) {
+            Dbg.log(this, "write failed: " + e);
+            closeSession();
+            return "";
         }
     }
 
@@ -327,7 +393,7 @@ public class RfcommService extends Service {
     private boolean ensureSession() {
         if (session != null && session.alive) return true;
         closeSession();
-        BluetoothDevice dev = findTarget();
+        BluetoothDevice dev = PhoneLink.target(this);
         if (dev == null) {
             QudelixWidget.pushStatus(this, "5K not paired / BT off");
             return false;
@@ -520,29 +586,6 @@ public class RfcommService extends Service {
             Dbg.log(c, "service start (" + action + ") failed: " + e);
             return false;
         }
-    }
-
-    private BluetoothAdapter adapter() {
-        BluetoothManager bm = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
-        return bm == null ? null : bm.getAdapter();
-    }
-
-    /** The device picked in settings, else the first paired "Qudelix-5K…". */
-    private BluetoothDevice findTarget() {
-        BluetoothAdapter a = adapter();
-        if (a == null || !a.isEnabled()) return null;
-        Set<BluetoothDevice> bonded = a.getBondedDevices();
-        if (bonded == null) return null;
-        String want = Prefs.getDevice(this);
-        for (BluetoothDevice d : bonded) {
-            if (!want.isEmpty()) {
-                if (want.equals(d.getAddress())) return d;
-                continue;
-            }
-            String name = d.getName();
-            if (name != null && name.startsWith(Proto.NAME_PREFIX)) return d;
-        }
-        return null;
     }
 
     private interface Cond { boolean ok(); }

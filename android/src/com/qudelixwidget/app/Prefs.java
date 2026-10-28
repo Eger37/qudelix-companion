@@ -70,12 +70,17 @@ public final class Prefs {
         e.apply();
     }
 
-    /** This phone's audio link to the 5K was dropped from the widget (button shows "Link"). */
+    /** This phone's music isn't on the 5K (button shows "Link"); read from Android (PhoneLink). */
     public static boolean getPhoneAudioOff(Context c) { return p(c).getBoolean("phoneAudioOff", false); }
     public static void setPhoneAudioOff(Context c, boolean off) { p(c).edit().putBoolean("phoneAudioOff", off).apply(); }
-    /** Everything (music + calls) was dropped by Disconnect (button shows "Connect"). */
+    /** Nothing of this phone is on the 5K (button shows "Connect"); read from Android (PhoneLink). */
     public static boolean getPhoneDisconnected(Context c) { return p(c).getBoolean("phoneDisconnected", false); }
     public static void setPhoneDisconnected(Context c, boolean d) { p(c).edit().putBoolean("phoneDisconnected", d).apply(); }
+
+    /** This phone's Bluetooth address as the 5K lists it (Android hides it from apps, so it's
+     *  learned from the 5K's conn status — DevState.phoneAddr / droppedHost); -1 unknown. */
+    public static long getSelfAddr(Context c) { return p(c).getLong("selfAddr", -1); }
+    public static void setSelfAddr(Context c, long a) { p(c).edit().putLong("selfAddr", a).apply(); }
 
     /** Status of the current action; "" = none (the widget then shows what is playing). */
     public static String getStatus(Context c) { return p(c).getString("status", ""); }
