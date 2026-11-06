@@ -9,7 +9,9 @@
 //! Windows 11 lands *under* Progman: invisible until the shell reshuffles, e.g.
 //! on the Win key), OWNED by the desktop (`Progman`), plus guards that re-show
 //! it whenever the shell hides/minimizes it (WM_SHOWWINDOW / WM_SIZE /
-//! SC_MINIMIZE / SWP_HIDEWINDOW) and a 700 ms watchdog. (Parenting into the
+//! SC_MINIMIZE / SWP_HIDEWINDOW) and a 700 ms watchdog that also re-slots the
+//! gadget when Win+D raises the desktop over it — the desktop being the window
+//! that hosts the icon view, `Progman` or a `WorkerW`. (Parenting into the
 //! shell's icon view was tried and dropped: worse rendering, Explorer hangs.)
 //!
 //! UI (custom-drawn, see `ui.rs`; follows the Windows light/dark theme): a
@@ -53,6 +55,9 @@ const WM_APP_QUIT: u32 = WM_APP + 6;
 /// `&mut AppState`), and a quit that arrived meanwhile. See `ModalGuard`.
 static MODAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static QUIT_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// One log line the first time the desktop is found raised above the gadget
+/// (Win+D), not one per watchdog tick.
+static BURIED_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Marks a modal section; on leaving the last one, a deferred quit is re-posted.
 struct ModalGuard(HWND);
@@ -1084,9 +1089,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if !state_ptr.is_null() && wp.0 == TIMER_REFRESH {
                 (*state_ptr).refresh_status(hwnd);
                 // Desktop-gadget watchdog: whatever "Show desktop" (Win+D) did —
-                // hide or minimize us — put the gadget back on the desktop. This
-                // catches every hide path the event-based guards miss.
-                if IsIconic(hwnd).as_bool() || !IsWindowVisible(hwnd).as_bool() {
+                // hide us, minimize us, or raise the desktop over us — put the
+                // gadget back on the desktop. This catches every path the
+                // event-based guards miss (a raised desktop sends us nothing).
+                let buried = covered_by_desktop(hwnd);
+                if IsIconic(hwnd).as_bool() || !IsWindowVisible(hwnd).as_bool() || buried {
+                    if buried && !BURIED_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        crate::log::line("[gadget] desktop raised above us (Win+D) — re-slotting");
+                    }
                     let _ = PostMessageW(hwnd, WM_APP_RESHOW, WPARAM(0), LPARAM(0));
                 }
             }
@@ -1120,14 +1130,70 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     }
 }
 
-/// `hWndInsertAfter` that puts `me` directly above the desktop (Progman): after
-/// the lowest normal window. `HWND_BOTTOM` would put us UNDER Progman — hidden.
+/// The shell window that really carries the desktop icon view, which is what
+/// "Show desktop" (Win+D) raises. Usually `Progman`, but with a wallpaper
+/// slideshow / fade the icons live in a top-level `WorkerW` instead: slotting
+/// above `Progman` alone then leaves the gadget UNDER the raised desktop —
+/// invisible until the shell reshuffles the z-order (pressing Win).
+/// (User-reported on a second PC, 2026-11-06.)
+unsafe fn desktop_window() -> HWND {
+    let progman = FindWindowW(w!("Progman"), PCWSTR::null()).unwrap_or_default();
+    if !progman.0.is_null() && hosts_icon_view(progman) {
+        return progman;
+    }
+    let mut prev = HWND::default();
+    for _ in 0..64 {
+        let Ok(next) = FindWindowExW(HWND::default(), prev, w!("WorkerW"), PCWSTR::null()) else {
+            break;
+        };
+        if next.0.is_null() {
+            break;
+        }
+        if hosts_icon_view(next) {
+            return next;
+        }
+        prev = next;
+    }
+    progman
+}
+
+/// Does this shell window host the desktop icon view (`SHELLDLL_DefView`)?
+unsafe fn hosts_icon_view(h: HWND) -> bool {
+    FindWindowExW(h, HWND::default(), w!("SHELLDLL_DefView"), PCWSTR::null())
+        .is_ok_and(|c| !c.0.is_null())
+}
+
+/// True if the desktop sits ABOVE the gadget — what Win+D does: it raises the
+/// desktop window over every normal window, and the gadget stays under it until
+/// the next shell reshuffle. Walks the z-order down from the desktop; finding
+/// `me` there means we are covered.
+unsafe fn covered_by_desktop(me: HWND) -> bool {
+    let desktop = desktop_window();
+    if desktop.0.is_null() {
+        return false;
+    }
+    let mut h = desktop;
+    for _ in 0..256 {
+        let Ok(next) = GetWindow(h, GW_HWNDNEXT) else { return false };
+        if next.0.is_null() {
+            return false;
+        }
+        if next == me {
+            return true;
+        }
+        h = next;
+    }
+    false
+}
+
+/// `hWndInsertAfter` that puts `me` directly above the desktop: after the lowest
+/// normal window. `HWND_BOTTOM` would put us UNDER the desktop — hidden.
 unsafe fn desktop_slot(me: HWND) -> HWND {
-    let Ok(progman) = FindWindowW(w!("Progman"), PCWSTR::null()) else { return HWND_BOTTOM };
-    if progman.0.is_null() {
+    let desktop = desktop_window();
+    if desktop.0.is_null() {
         return HWND_BOTTOM;
     }
-    let mut above = GetWindow(progman, GW_HWNDPREV).unwrap_or_default();
+    let mut above = GetWindow(desktop, GW_HWNDPREV).unwrap_or_default();
     if above == me {
         // Already in place: "after the window above us" keeps the position.
         above = GetWindow(me, GW_HWNDPREV).unwrap_or_default();
