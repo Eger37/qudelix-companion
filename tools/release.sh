@@ -62,13 +62,23 @@ done
 (cd dist && sha256sum qudelix-widget.exe qudelix-widget.apk > SHA256SUMS)
 
 # 2. Commit, tag, push, release.
+# Release notes = the commit subjects since the last release (minus the version
+# bump itself). `--generate-notes` lists merged PRs only, and this repo commits
+# straight to main, so it would ship an empty changelog.
+PREV="$("$GH" release view --json tagName -q .tagName 2>/dev/null || true)"
+REPO_URL="$("$GH" repo view --json url -q .url)"
+NOTES="$(git log --no-merges --reverse --pretty='- %s' ${PREV:+"$PREV"..}HEAD | grep -v '^- Release v' || true)"
+[[ -n "$NOTES" ]] || NOTES="- (no commits since ${PREV:-the first release})"
+[[ -z "$PREV" ]] || NOTES="$NOTES
+
+**Full Changelog**: $REPO_URL/compare/$PREV...v$VN"
 git add VERSION
 git diff --cached --quiet || git commit -q -m "Release v$VN"   # VERSION may already be bumped
 if [[ "$(git rev-parse -q --verify "refs/tags/v$VN^{commit}" || true)" != "$(git rev-parse HEAD)" ]]; then
   git tag "v$VN"
 fi
 git push -q origin HEAD "v$VN"
-"$GH" release create "v$VN" dist/qudelix-widget.exe dist/qudelix-widget.apk dist/*.sig dist/SHA256SUMS --title "v$VN" --generate-notes
+"$GH" release create "v$VN" dist/qudelix-widget.exe dist/qudelix-widget.apk dist/*.sig dist/SHA256SUMS --title "v$VN" --notes "$NOTES"
 trap - ERR
 echo "released v$VN"
 
